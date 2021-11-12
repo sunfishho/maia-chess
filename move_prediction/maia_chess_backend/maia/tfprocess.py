@@ -28,6 +28,10 @@ from .proto.net_pb2 import NetworkFormat
 from .net import Net
 
 from ..utils import printWithDate
+import pdb
+
+# DATA_FORMAT = "channels_first"
+DATA_FORMAT = "channels_last"
 
 class ApplySqueezeExcitation(tf.keras.layers.Layer):
     def __init__(self, **kwargs):
@@ -37,9 +41,11 @@ class ApplySqueezeExcitation(tf.keras.layers.Layer):
         self.reshape_size = input_dimens[1][1]
 
     def call(self, inputs):
+        print("in call!")
         x = inputs[0]
         excited = inputs[1]
         gammas, betas = tf.split(tf.reshape(excited, [-1, self.reshape_size, 1, 1]), 2, axis=1)
+        pdb.set_trace()
         return tf.nn.sigmoid(gammas) * x + betas
 
 
@@ -117,8 +123,8 @@ class TFProcess:
         self.renorm_momentum = self.cfg['training'].get('renorm_momentum', 0.99)
 
         gpus = tf.config.experimental.list_physical_devices('GPU')
-        tf.config.experimental.set_visible_devices(gpus[self.cfg['gpu']], 'GPU')
-        tf.config.experimental.set_memory_growth(gpus[self.cfg['gpu']], True)
+        # tf.config.experimental.set_visible_devices(gpus[self.cfg['gpu']], 'GPU')
+        # tf.config.experimental.set_memory_growth(gpus[self.cfg['gpu']], True)
         if self.model_dtype == tf.float16:
             tf.keras.mixed_precision.experimental.set_policy('mixed_float16')
 
@@ -702,24 +708,26 @@ class TFProcess:
         else:
             return tf.keras.layers.BatchNormalization(
                 epsilon=1e-5, axis=1, fused=False, center=True,
-                scale=scale, virtual_batch_size=64)(input)
+                scale=scale, virtual_batch_size=64,
+                )(input)
 
     def squeeze_excitation_v2(self, inputs, channels):
         assert channels % self.SE_ratio == 0
 
-        pooled = tf.keras.layers.GlobalAveragePooling2D(data_format='channels_first')(inputs)
+        pooled = tf.keras.layers.GlobalAveragePooling2D(data_format=DATA_FORMAT)(inputs)
         squeezed = tf.keras.layers.Activation('relu')(tf.keras.layers.Dense(channels // self.SE_ratio, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg)(pooled))
         excited = tf.keras.layers.Dense(2 * channels, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg)(squeezed)
+
         return ApplySqueezeExcitation()([inputs, excited])
 
     def conv_block_v2(self, inputs, filter_size, output_channels, bn_scale=False):
-        conv = tf.keras.layers.Conv2D(output_channels, filter_size, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format='channels_first')(inputs)
+        conv = tf.keras.layers.Conv2D(output_channels, filter_size, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format=DATA_FORMAT)(inputs)
         return tf.keras.layers.Activation('relu')(self.batch_norm_v2(conv, scale=bn_scale))
 
     def residual_block_v2(self, inputs, channels):
-        conv1 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format='channels_first')(inputs)
+        conv1 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format=DATA_FORMAT)(inputs)
         out1 = tf.keras.layers.Activation('relu')(self.batch_norm_v2(conv1, scale=False))
-        conv2 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format='channels_first')(out1)
+        conv2 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format=DATA_FORMAT)(out1)
         out2 = self.squeeze_excitation_v2(self.batch_norm_v2(conv2, scale=True), channels)
         return tf.keras.layers.Activation('relu')(tf.keras.layers.add([inputs, out2]))
 
@@ -730,7 +738,7 @@ class TFProcess:
         # Policy head
         if self.POLICY_HEAD == NetworkFormat.POLICY_CONVOLUTION:
             conv_pol = self.conv_block_v2(flow, filter_size=3, output_channels=self.RESIDUAL_FILTERS)
-            conv_pol2 = tf.keras.layers.Conv2D(80, 3, use_bias=True, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg, data_format='channels_first')(conv_pol)
+            conv_pol2 = tf.keras.layers.Conv2D(80, 3, use_bias=True, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg, data_format=DATA_FORMAT)(conv_pol)
             h_fc1 = ApplyPolicyMap()(conv_pol2)
         elif self.POLICY_HEAD == NetworkFormat.POLICY_CLASSICAL:
             conv_pol = self.conv_block_v2(flow, filter_size=1, output_channels=self.policy_channels)
