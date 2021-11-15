@@ -30,7 +30,7 @@ from .net import Net
 from ..utils import printWithDate
 import pdb
 
-# DATA_FORMAT = "channels_first"
+# DATA_FORMAT = "channels_first"  # original gpu stuff
 DATA_FORMAT = "channels_last"
 
 class ApplySqueezeExcitation(tf.keras.layers.Layer):
@@ -41,13 +41,12 @@ class ApplySqueezeExcitation(tf.keras.layers.Layer):
         self.reshape_size = input_dimens[1][1]
 
     def call(self, inputs):
-        print("in call!")
         x = inputs[0]
         excited = inputs[1]
-        gammas, betas = tf.split(tf.reshape(excited, [-1, self.reshape_size, 1, 1]), 2, axis=1)
-        pdb.set_trace()
-        return tf.nn.sigmoid(gammas) * x + betas
 
+        gammas, betas = tf.split(tf.reshape(excited, [-1, self.reshape_size, 1, 1]), 2, axis=1)
+
+        return tf.nn.sigmoid(gammas) * x + betas
 
 class ApplyPolicyMap(tf.keras.layers.Layer):
     def __init__(self, **kwargs):
@@ -136,12 +135,23 @@ class TFProcess:
         self.test_dataset = test_dataset
         self.test_iter = iter(test_dataset)
         self.init_net_v2()
+        print("init net v2 done")
+        pdb.set_trace()
 
     def init_net_v2(self):
         self.l2reg = tf.keras.regularizers.l2(l=0.5 * (0.0001))
         input_var = tf.keras.Input(shape=(112, 8*8))
         x_planes = tf.keras.layers.Reshape([112, 8, 8])(input_var)
+        # print(x_planes.shape)
+        # pdb.set_trace()
+        # if DATA_FORMAT == "channels_last":
+            # x_planes = tf.transpose(x_planes, [0, 3, 1, 2])
+
+        # print(x_planes.shape)
+        # pdb.set_trace()
+
         self.model = tf.keras.Model(inputs=input_var, outputs=self.construct_net_v2(x_planes))
+
         # swa_count initialized reguardless to make checkpoint code simpler.
         self.swa_count = tf.Variable(0., name='swa_count', trainable=False)
         self.swa_weights = None
@@ -154,6 +164,7 @@ class TFProcess:
         self.orig_optimizer = self.optimizer
         if self.loss_scale != 1:
             self.optimizer = tf.keras.mixed_precision.experimental.LossScaleOptimizer(self.optimizer, self.loss_scale)
+
         def correct_policy(target, output):
             output = tf.cast(output, tf.float32)
             # Calculate loss on policy head
@@ -166,13 +177,16 @@ class TFProcess:
             # y_ still has -1 on illegal moves, flush them to 0
             target = tf.nn.relu(target)
             return target, output
+
         def policy_loss(target, output):
             target, output = correct_policy(target, output)
             policy_cross_entropy = \
                 tf.nn.softmax_cross_entropy_with_logits(labels=tf.stop_gradient(target),
                                                         logits=output)
             return tf.reduce_mean(input_tensor=policy_cross_entropy)
+
         self.policy_loss_fn = policy_loss
+
         def policy_accuracy(target, output):
             target, output = correct_policy(target, output)
             return tf.reduce_mean(tf.cast(tf.equal(tf.argmax(input=target, axis=1), tf.argmax(input=output, axis=1)), tf.float32))
@@ -713,6 +727,9 @@ class TFProcess:
 
     def squeeze_excitation_v2(self, inputs, channels):
         assert channels % self.SE_ratio == 0
+        # seems to solve it, but temporarily and crashes later?
+        # if DATA_FORMAT == "channels_last":
+            # inputs = tf.transpose(inputs, [0, 3, 1, 2])
 
         pooled = tf.keras.layers.GlobalAveragePooling2D(data_format=DATA_FORMAT)(inputs)
         squeezed = tf.keras.layers.Activation('relu')(tf.keras.layers.Dense(channels // self.SE_ratio, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg)(pooled))
@@ -725,10 +742,16 @@ class TFProcess:
         return tf.keras.layers.Activation('relu')(self.batch_norm_v2(conv, scale=bn_scale))
 
     def residual_block_v2(self, inputs, channels):
+
         conv1 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format=DATA_FORMAT)(inputs)
         out1 = tf.keras.layers.Activation('relu')(self.batch_norm_v2(conv1, scale=False))
         conv2 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format=DATA_FORMAT)(out1)
         out2 = self.squeeze_excitation_v2(self.batch_norm_v2(conv2, scale=True), channels)
+
+        # if DATA_FORMAT == "channels_last":
+            # inputs = tf.transpose(inputs, [0, 3, 1, 2])
+        # print(out2.shape, inputs.shape)
+        # pdb.set_trace()
         return tf.keras.layers.Activation('relu')(tf.keras.layers.add([inputs, out2]))
 
     def construct_net_v2(self, inputs):
