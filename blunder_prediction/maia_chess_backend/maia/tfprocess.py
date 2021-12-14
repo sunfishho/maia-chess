@@ -361,7 +361,11 @@ class TFProcess:
     @tf.function()
     def process_inner_loop(self, x, y, z, q):
         with tf.GradientTape() as tape:
+            print("before self.model")
+            pdb.set_trace()
             policy, value = self.model(x, training=True)
+            print("after self.model")
+            pdb.set_trace()
             policy_loss = self.policy_loss_fn(y, policy)
             reg_term = sum(self.model.losses)
             if self.wdl:

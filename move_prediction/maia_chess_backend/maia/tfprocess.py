@@ -28,10 +28,7 @@ from .proto.net_pb2 import NetworkFormat
 from .net import Net
 
 from ..utils import printWithDate
-import pdb
-
-# DATA_FORMAT = "channels_first"  # original gpu stuff
-DATA_FORMAT = "channels_last"
+import wandb
 
 class ApplySqueezeExcitation(tf.keras.layers.Layer):
     def __init__(self, **kwargs):
@@ -43,10 +40,9 @@ class ApplySqueezeExcitation(tf.keras.layers.Layer):
     def call(self, inputs):
         x = inputs[0]
         excited = inputs[1]
-
         gammas, betas = tf.split(tf.reshape(excited, [-1, self.reshape_size, 1, 1]), 2, axis=1)
-
         return tf.nn.sigmoid(gammas) * x + betas
+
 
 class ApplyPolicyMap(tf.keras.layers.Layer):
     def __init__(self, **kwargs):
@@ -122,12 +118,13 @@ class TFProcess:
         self.renorm_momentum = self.cfg['training'].get('renorm_momentum', 0.99)
 
         gpus = tf.config.experimental.list_physical_devices('GPU')
-        # tf.config.experimental.set_visible_devices(gpus[self.cfg['gpu']], 'GPU')
-        # tf.config.experimental.set_memory_growth(gpus[self.cfg['gpu']], True)
+        tf.config.experimental.set_visible_devices(gpus[self.cfg['gpu']], 'GPU')
+        tf.config.experimental.set_memory_growth(gpus[self.cfg['gpu']], True)
         if self.model_dtype == tf.float16:
             tf.keras.mixed_precision.experimental.set_policy('mixed_float16')
 
         self.global_step = tf.Variable(0, name='global_step', trainable=False, dtype=tf.int64)
+        print("set global set to 0")
 
     def init_v2(self, train_dataset, test_dataset):
         self.train_dataset = train_dataset
@@ -135,23 +132,12 @@ class TFProcess:
         self.test_dataset = test_dataset
         self.test_iter = iter(test_dataset)
         self.init_net_v2()
-        print("init net v2 done")
-        pdb.set_trace()
 
     def init_net_v2(self):
         self.l2reg = tf.keras.regularizers.l2(l=0.5 * (0.0001))
         input_var = tf.keras.Input(shape=(112, 8*8))
         x_planes = tf.keras.layers.Reshape([112, 8, 8])(input_var)
-        # print(x_planes.shape)
-        # pdb.set_trace()
-        # if DATA_FORMAT == "channels_last":
-            # x_planes = tf.transpose(x_planes, [0, 3, 1, 2])
-
-        # print(x_planes.shape)
-        # pdb.set_trace()
-
         self.model = tf.keras.Model(inputs=input_var, outputs=self.construct_net_v2(x_planes))
-
         # swa_count initialized reguardless to make checkpoint code simpler.
         self.swa_count = tf.Variable(0., name='swa_count', trainable=False)
         self.swa_weights = None
@@ -177,16 +163,13 @@ class TFProcess:
             # y_ still has -1 on illegal moves, flush them to 0
             target = tf.nn.relu(target)
             return target, output
-
         def policy_loss(target, output):
             target, output = correct_policy(target, output)
             policy_cross_entropy = \
                 tf.nn.softmax_cross_entropy_with_logits(labels=tf.stop_gradient(target),
                                                         logits=output)
             return tf.reduce_mean(input_tensor=policy_cross_entropy)
-
         self.policy_loss_fn = policy_loss
-
         def policy_accuracy(target, output):
             target, output = correct_policy(target, output)
             return tf.reduce_mean(tf.cast(tf.equal(tf.argmax(input=target, axis=1), tf.argmax(input=output, axis=1)), tf.float32))
@@ -370,6 +353,8 @@ class TFProcess:
         # Get the initial steps value in case this is a resume from a step count
         # which is not a multiple of total_steps.
         steps = self.global_step.read_value()
+        print("global step value at start: ", steps)
+
         total_steps = self.cfg['training']['total_steps']
         for _ in range(steps % total_steps, total_steps):
             self.process_v2(batch_size, test_batches, batch_splits=batch_splits)
@@ -406,6 +391,7 @@ class TFProcess:
         steps = self.global_step.read_value()
         if not self.last_steps:
             self.last_steps = steps
+            print("updated to: ", steps)
 
         if self.swa_enabled:
             # split half of test_batches between testing regular weights and SWA weights
@@ -501,6 +487,15 @@ class TFProcess:
             self.train_writer.flush()
             self.time_start = time_end
             self.last_steps = steps
+
+            wandb.log({"Policy Loss": avg_policy_loss , "step":steps})
+            wandb.log({"Value Loss": avg_value_loss , "step":steps})
+            wandb.log({"MSE Loss": avg_mse_loss , "step":steps})
+            wandb.log({"Reg term": avg_reg_term , "step":steps})
+
+            #wandb.log({"Policy Accuracy": sum_policy_accuracy , "step":steps})
+            #wandb.log({"Value Accuracy": sum_value_accuracy , "step":steps})
+
             self.avg_policy_loss, self.avg_value_loss, self.avg_mse_loss, self.avg_reg_term = [], [], [], []
 
         if self.swa_enabled and steps % self.cfg['training']['swa_steps'] == 0:
@@ -514,8 +509,11 @@ class TFProcess:
                 self.calculate_swa_summaries_v2(test_batches, steps)
 
         # Save session and weights at end, and also optionally every 'checkpoint_steps'.
-        if steps % self.cfg['training']['total_steps'] == 0 or (
-                'checkpoint_steps' in self.cfg['training'] and steps % self.cfg['training']['checkpoint_steps'] == 0):
+        #if steps % self.cfg['training']['total_steps'] == 0 or (
+        #        'checkpoint_steps' in self.cfg['training'] and steps % self.cfg['training']['checkpoint_steps'] == 0):
+
+        # pari: FIXME: don't want two consecutively trained models to be saved / interfered; reuse this code when we need to save models / and maybe use the wandb experiment name to save the models
+        if False:
             self.manager.save()
             print("Model saved in file: {}".format(self.manager.latest_checkpoint))
             evaled_steps = steps.numpy()
@@ -596,6 +594,13 @@ class TFProcess:
 
         printWithDate("step {}, policy={:g} value={:g} policy accuracy={:g}% value accuracy={:g}% mse={:g}".\
             format(steps, sum_policy, sum_value, sum_policy_accuracy, sum_value_accuracy, sum_mse))
+    
+        #print("going to log to wandb!")
+        wandb.log({"Test Policy Loss": sum_policy , "step":steps})
+        wandb.log({"Test Value Loss": sum_value , "step":steps})
+        wandb.log({"Test MSE Loss": sum_mse , "step":steps})
+        wandb.log({"Test Policy Accuracy": sum_policy_accuracy , "step":steps})
+        wandb.log({"Test Value Accuracy": sum_value_accuracy , "step":steps})
 
     @tf.function()
     def compute_update_ratio_v2(self, before_weights, after_weights, steps):
@@ -722,36 +727,25 @@ class TFProcess:
         else:
             return tf.keras.layers.BatchNormalization(
                 epsilon=1e-5, axis=1, fused=False, center=True,
-                scale=scale, virtual_batch_size=64,
-                )(input)
+                scale=scale, virtual_batch_size=64)(input)
 
     def squeeze_excitation_v2(self, inputs, channels):
         assert channels % self.SE_ratio == 0
-        # seems to solve it, but temporarily and crashes later?
-        # if DATA_FORMAT == "channels_last":
-            # inputs = tf.transpose(inputs, [0, 3, 1, 2])
 
-        pooled = tf.keras.layers.GlobalAveragePooling2D(data_format=DATA_FORMAT)(inputs)
+        pooled = tf.keras.layers.GlobalAveragePooling2D(data_format='channels_first')(inputs)
         squeezed = tf.keras.layers.Activation('relu')(tf.keras.layers.Dense(channels // self.SE_ratio, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg)(pooled))
         excited = tf.keras.layers.Dense(2 * channels, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg)(squeezed)
-
         return ApplySqueezeExcitation()([inputs, excited])
 
     def conv_block_v2(self, inputs, filter_size, output_channels, bn_scale=False):
-        conv = tf.keras.layers.Conv2D(output_channels, filter_size, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format=DATA_FORMAT)(inputs)
+        conv = tf.keras.layers.Conv2D(output_channels, filter_size, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format='channels_first')(inputs)
         return tf.keras.layers.Activation('relu')(self.batch_norm_v2(conv, scale=bn_scale))
 
     def residual_block_v2(self, inputs, channels):
-
-        conv1 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format=DATA_FORMAT)(inputs)
+        conv1 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format='channels_first')(inputs)
         out1 = tf.keras.layers.Activation('relu')(self.batch_norm_v2(conv1, scale=False))
-        conv2 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format=DATA_FORMAT)(out1)
+        conv2 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format='channels_first')(out1)
         out2 = self.squeeze_excitation_v2(self.batch_norm_v2(conv2, scale=True), channels)
-
-        # if DATA_FORMAT == "channels_last":
-            # inputs = tf.transpose(inputs, [0, 3, 1, 2])
-        # print(out2.shape, inputs.shape)
-        # pdb.set_trace()
         return tf.keras.layers.Activation('relu')(tf.keras.layers.add([inputs, out2]))
 
     def construct_net_v2(self, inputs):
@@ -761,7 +755,7 @@ class TFProcess:
         # Policy head
         if self.POLICY_HEAD == NetworkFormat.POLICY_CONVOLUTION:
             conv_pol = self.conv_block_v2(flow, filter_size=3, output_channels=self.RESIDUAL_FILTERS)
-            conv_pol2 = tf.keras.layers.Conv2D(80, 3, use_bias=True, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg, data_format=DATA_FORMAT)(conv_pol)
+            conv_pol2 = tf.keras.layers.Conv2D(80, 3, use_bias=True, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg, data_format='channels_first')(conv_pol)
             h_fc1 = ApplyPolicyMap()(conv_pol2)
         elif self.POLICY_HEAD == NetworkFormat.POLICY_CLASSICAL:
             conv_pol = self.conv_block_v2(flow, filter_size=1, output_channels=self.policy_channels)

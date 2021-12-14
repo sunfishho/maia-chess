@@ -6,12 +6,20 @@ import sys
 import glob
 import gzip
 import random
-import multiprocessing
+#import multiprocessing
 
 import tensorflow as tf
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'  # or any {'0', '1', '2'}
 
 import maia_chess_backend
 import maia_chess_backend.maia
+
+import wandb
+import logging
+import pdb
+logger = logging.getLogger("wandb")
+logger.setLevel(logging.ERROR)
 
 SKIP = 32
 
@@ -24,6 +32,17 @@ def main(config_path, name, collection_name):
 
     maia_chess_backend.printWithDate(yaml.dump(cfg, default_flow_style=False))
 
+    config_dictionary = dict(
+                yaml=config_path,
+    )
+    wandb.init("maia-chess", config={})
+    for k,v in cfg.items():
+        if isinstance(v, dict):
+            for k2,v2 in v.items():
+                wandb.config.update({k2:v2})
+        else:
+            wandb.config.update({k:v})
+    
     experimental_parser = cfg['dataset'].get('experimental_v4_only_dataset', False)
 
     train_chunks = get_latest_chunks(cfg['dataset']['input_train'])
@@ -95,9 +114,9 @@ def main(config_path, name, collection_name):
 
 def get_latest_chunks(path):
     chunks = []
-    maia_chess_backend.printWithDate(f"found {glob.glob(path)} chunk dirs")
+    #maia_chess_backend.printWithDate(f"found {glob.glob(path)} chunk dirs")
     for d in glob.glob(path):
-        maia_chess_backend.printWithDate(f"found {len(chunks)} chunks", end = '\r')
+        #maia_chess_backend.printWithDate(f"found {len(chunks)} chunks", end = '\r')
         chunks += glob.glob(os.path.join(d, '*.gz'))
     maia_chess_backend.printWithDate(f"found {len(chunks)} chunks total")
     if len(chunks) < 10:
@@ -183,6 +202,6 @@ if __name__ == "__main__":
     collection_name = os.path.basename(os.path.dirname(args.config)).replace('configs_', '')
     name = os.path.basename(args.config).split('.')[0]
 
-    multiprocessing.set_start_method('spawn')
+    #multiprocessing.set_start_method('spawn')
     main(args.config, name, collection_name)
-    multiprocessing.freeze_support()
+    #multiprocessing.freeze_support()
