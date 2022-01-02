@@ -35,14 +35,25 @@ def main(config_path, name, collection_name):
     config_dictionary = dict(
                 yaml=config_path,
     )
-    wandb.init("maia-chess", config={})
+
+    wandbcfg = {}
     for k,v in cfg.items():
         if isinstance(v, dict):
             for k2,v2 in v.items():
-                wandb.config.update({k2:v2})
+                wandbcfg.update({k2:v2})
         else:
-            wandb.config.update({k:v})
-    
+            wandbcfg.update({k:v})
+    wandb.init("maia-chess", config=wandbcfg)
+
+    #wandb.init("maia-chess", config={})
+    # for k,v in cfg.items():
+        # if isinstance(v, dict):
+            # for k2,v2 in v.items():
+                # wandb.config.update({k2:v2})
+        # else:
+            # wandb.config.update({k:v})
+    print(wandb.config)
+
     experimental_parser = cfg['dataset'].get('experimental_v4_only_dataset', False)
 
     train_chunks = get_latest_chunks(cfg['dataset']['input_train'])
@@ -63,13 +74,16 @@ def main(config_path, name, collection_name):
     tfprocess = maia_chess_backend.maia.TFProcess(cfg, name, collection_name)
 
     if experimental_parser:
+        assert False
         train_dataset = tf.data.Dataset.from_tensor_slices(train_chunks).shuffle(len(train_chunks)).repeat()\
                          .interleave(lambda x: tf.data.FixedLengthRecordDataset(x, 8292, compression_type='GZIP', num_parallel_reads=1).filter(sample), num_parallel_calls=tf.data.experimental.AUTOTUNE)\
                          .shuffle(shuffle_size)\
                          .batch(split_batch_size).map(extract_inputs_outputs).prefetch(4)
     else:
         train_parser = maia_chess_backend.maia.ChunkParser(FileDataSrc(train_chunks.copy()),
-                shuffle_size=shuffle_size, sample=SKIP, batch_size=maia_chess_backend.maia.ChunkParser.BATCH_SIZE)
+                shuffle_size=shuffle_size, sample=SKIP,
+                batch_size=maia_chess_backend.maia.ChunkParser.BATCH_SIZE,
+                workers=1)
         train_dataset = tf.data.Dataset.from_generator(
             train_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
         train_dataset = train_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function)
@@ -83,7 +97,9 @@ def main(config_path, name, collection_name):
                          .batch(split_batch_size).map(extract_inputs_outputs).prefetch(4)
     else:
         test_parser = maia_chess_backend.maia.ChunkParser(FileDataSrc(test_chunks),
-                shuffle_size=shuffle_size, sample=SKIP, batch_size=maia_chess_backend.maia.ChunkParser.BATCH_SIZE)
+                shuffle_size=shuffle_size, sample=SKIP,
+                batch_size=maia_chess_backend.maia.ChunkParser.BATCH_SIZE,
+                workers=1)
         test_dataset = tf.data.Dataset.from_generator(
             test_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
         test_dataset = test_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function)
@@ -92,6 +108,10 @@ def main(config_path, name, collection_name):
     tfprocess.init_v2(train_dataset, test_dataset)
 
     tfprocess.restore_v2()
+
+    # pari: what is the "the 10 samples per test game" mentioned in the
+    # comment below? how are these sampled -- aren't we looping through all
+    # test positions?
 
     # If number of test positions is not given
     # sweeps through all test chunks statistically

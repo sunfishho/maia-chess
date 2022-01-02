@@ -3,15 +3,18 @@
 gpu: 0
 
 dataset:
-  input_train: '/home/gridsan/pnegi/maia-chess/sampledata/training/*/*' # This uses glob so training/*/* is probably the end
-  input_test: '/home/gridsan/pnegi/maia-chess/sampledata/validation/*/*' # This uses glob so validate/*/* is probably the end
+  input_train: '/home/gridsan/pnegi/maia-chess/1100traindata/training/*/*' # This uses glob so training/*/* is probably the end
+  input_test: '/home/gridsan/pnegi/maia-chess/1100traindata/validation/*/*' # This uses glob so validate/*/* is probably the end
 
 training:
     precision: 'half'
-    batch_size: 4096
-    num_batch_splits: 4
+    #batch_size: 4096
+    #num_batch_splits: 4
+    batch_size: 1024
+    num_batch_splits: 1
     test_steps: 50
     train_avg_report_steps: 50
+
     total_steps: 400000
     checkpoint_steps: 10000
     shuffle_size: 250000

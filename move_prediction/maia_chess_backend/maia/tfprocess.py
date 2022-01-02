@@ -29,6 +29,7 @@ from .net import Net
 
 from ..utils import printWithDate
 import wandb
+import pdb
 
 class ApplySqueezeExcitation(tf.keras.layers.Layer):
     def __init__(self, **kwargs):
@@ -391,7 +392,6 @@ class TFProcess:
         steps = self.global_step.read_value()
         if not self.last_steps:
             self.last_steps = steps
-            print("updated to: ", steps)
 
         if self.swa_enabled:
             # split half of test_batches between testing regular weights and SWA weights
@@ -488,10 +488,11 @@ class TFProcess:
             self.time_start = time_end
             self.last_steps = steps
 
-            wandb.log({"Policy Loss": avg_policy_loss , "step":steps})
-            wandb.log({"Value Loss": avg_value_loss , "step":steps})
-            wandb.log({"MSE Loss": avg_mse_loss , "step":steps})
+            wandb.log({"LR": self.lr , "step":steps})
             wandb.log({"Reg term": avg_reg_term , "step":steps})
+            wandb.log({"Train Policy Loss": avg_policy_loss , "step":steps})
+            wandb.log({"Train Value Loss": avg_value_loss , "step":steps})
+            wandb.log({"Train MSE Loss": avg_mse_loss , "step":steps})
 
             #wandb.log({"Policy Accuracy": sum_policy_accuracy , "step":steps})
             #wandb.log({"Value Accuracy": sum_value_accuracy , "step":steps})
@@ -542,6 +543,7 @@ class TFProcess:
         policy, value = self.model(x, training=False)
         policy_loss = self.policy_loss_fn(y, policy)
         policy_accuracy = self.policy_accuracy_fn(y, policy)
+        # pari: no idea what qMix does
         if self.wdl:
             value_loss = self.value_loss_fn(self.qMix(z, q), value)
             mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
@@ -550,9 +552,11 @@ class TFProcess:
             value_loss = self.value_loss_fn(self.qMix(z, q), value)
             mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
             value_accuracy = tf.constant(0.)
+
         return policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy
 
     def calculate_test_summaries_v2(self, test_batches, steps):
+        start = time.time()
         sum_policy_accuracy = 0
         sum_value_accuracy = 0
         sum_mse = 0
@@ -595,12 +599,13 @@ class TFProcess:
         printWithDate("step {}, policy={:g} value={:g} policy accuracy={:g}% value accuracy={:g}% mse={:g}".\
             format(steps, sum_policy, sum_value, sum_policy_accuracy, sum_value_accuracy, sum_mse))
     
-        #print("going to log to wandb!")
         wandb.log({"Test Policy Loss": sum_policy , "step":steps})
         wandb.log({"Test Value Loss": sum_value , "step":steps})
         wandb.log({"Test MSE Loss": sum_mse , "step":steps})
         wandb.log({"Test Policy Accuracy": sum_policy_accuracy , "step":steps})
         wandb.log({"Test Value Accuracy": sum_value_accuracy , "step":steps})
+
+        print("calculate summaries took: ", time.time()-start)
 
     @tf.function()
     def compute_update_ratio_v2(self, before_weights, after_weights, steps):
