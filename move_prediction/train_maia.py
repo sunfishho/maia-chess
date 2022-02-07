@@ -21,7 +21,7 @@ import pdb
 logger = logging.getLogger("wandb")
 logger.setLevel(logging.ERROR)
 
-SKIP = 32
+SKIP = 1
 
 #@maia_chess_backend.logged_main
 def main(config_path, name, collection_name):
@@ -44,14 +44,6 @@ def main(config_path, name, collection_name):
         else:
             wandbcfg.update({k:v})
     wandb.init("maia-chess", config=wandbcfg)
-
-    #wandb.init("maia-chess", config={})
-    # for k,v in cfg.items():
-        # if isinstance(v, dict):
-            # for k2,v2 in v.items():
-                # wandb.config.update({k2:v2})
-        # else:
-            # wandb.config.update({k:v})
     print(wandb.config)
 
     experimental_parser = cfg['dataset'].get('experimental_v4_only_dataset', False)
