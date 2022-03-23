@@ -766,8 +766,7 @@ class TFProcess:
             conv_pol = self.conv_block_v2(flow, filter_size=1, output_channels=self.policy_channels)
             h_conv_pol_flat = tf.keras.layers.Flatten()(conv_pol)
             # this determines output layer
-            # h_fc1 = tf.keras.layers.Dense(1858, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(h_conv_pol_flat)
-            h_fc1 = tf.keras.layers.Dense(2, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(h_conv_pol_flat)
+            h_fc1 = tf.keras.layers.Dense(1858, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(h_conv_pol_flat)
         else:
             raise ValueError(
                 "Unknown policy head type {}".format(self.POLICY_HEAD))
