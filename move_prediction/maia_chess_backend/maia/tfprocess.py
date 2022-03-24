@@ -52,6 +52,7 @@ class ApplyPolicyMap(tf.keras.layers.Layer):
 
     def call(self, inputs):
         h_conv_pol_flat = tf.reshape(inputs, [-1, 80*8*8])
+        pdb.set_trace()
         return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1, h_conv_pol_flat.dtype))
 
 class TFProcess:
@@ -754,6 +755,7 @@ class TFProcess:
         return tf.keras.layers.Activation('relu')(tf.keras.layers.add([inputs, out2]))
 
     def construct_net_v2(self, inputs):
+        pdb.set_trace()
         flow = self.conv_block_v2(inputs, filter_size=3, output_channels=self.RESIDUAL_FILTERS, bn_scale=True)
         for _ in range(0, self.RESIDUAL_BLOCKS):
             flow = self.residual_block_v2(flow, self.RESIDUAL_FILTERS)
