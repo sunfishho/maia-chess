@@ -49,11 +49,13 @@ class ApplyPolicyMap(tf.keras.layers.Layer):
     def __init__(self, **kwargs):
         super(ApplyPolicyMap, self).__init__(**kwargs)
         self.fc1 = tf.constant(make_map())
+        self.fc1_modified = tf.Variable((np.empty((0, 2), dtype=np.float16)), shape=[None, 2])
 
     def call(self, inputs):
         h_conv_pol_flat = tf.reshape(inputs, [-1, 80*8*8])
         pdb.set_trace()
-        return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1, h_conv_pol_flat.dtype))
+        return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1_modified, h_conv_pol_flat.dtype))
+        # return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1, h_conv_pol_flat.dtype))
 
 class TFProcess:
     def __init__(self, cfg, name, collection_name):
@@ -431,6 +433,7 @@ class TFProcess:
         grads = None
         for _ in range(batch_splits):
             x, y, z, q = next(self.train_iter)
+            y = tf.constant(np.random.rand(1024, 2), dtype = np.float32)
             policy_loss, value_loss, mse_loss, reg_term, new_grads = self.process_inner_loop(x, y, z, q)
             if not grads:
                 grads = new_grads
@@ -755,12 +758,12 @@ class TFProcess:
         return tf.keras.layers.Activation('relu')(tf.keras.layers.add([inputs, out2]))
 
     def construct_net_v2(self, inputs):
-        pdb.set_trace()
         flow = self.conv_block_v2(inputs, filter_size=3, output_channels=self.RESIDUAL_FILTERS, bn_scale=True)
         for _ in range(0, self.RESIDUAL_BLOCKS):
             flow = self.residual_block_v2(flow, self.RESIDUAL_FILTERS)
         # Policy head
         if self.POLICY_HEAD == NetworkFormat.POLICY_CONVOLUTION:
+            pdb.set_trace()
             conv_pol = self.conv_block_v2(flow, filter_size=3, output_channels=self.RESIDUAL_FILTERS)
             conv_pol2 = tf.keras.layers.Conv2D(80, 3, use_bias=True, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg, data_format='channels_first')(conv_pol)
             h_fc1 = ApplyPolicyMap()(conv_pol2)
