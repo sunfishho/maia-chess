@@ -26,6 +26,7 @@ from ..utils import printWithDate
 import struct
 import tensorflow as tf
 import unittest
+import pdb
 
 V4_VERSION = struct.pack('i', 4)
 V3_VERSION = struct.pack('i', 3)
@@ -153,10 +154,11 @@ class ChunkParser:
 
         planes = tf.reshape(planes, (ChunkParser.BATCH_SIZE, 112, 8*8))
         probs = tf.reshape(probs, (ChunkParser.BATCH_SIZE, 1858))
+        probs_modified = tf.ones((ChunkParser.BATCH_SIZE,2))
         winner = tf.reshape(winner, (ChunkParser.BATCH_SIZE, 3))
         q = tf.reshape(q, (ChunkParser.BATCH_SIZE, 3))
 
-        return (planes, probs, winner, q)
+        return (planes, probs, winner, q, probs_modified)
 
 
     def convert_v4_to_tuple(self, content):

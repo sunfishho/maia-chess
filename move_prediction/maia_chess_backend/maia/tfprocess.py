@@ -52,6 +52,9 @@ class ApplyPolicyMap(tf.keras.layers.Layer):
         self.fc1_modified = tf.Variable((np.empty((0, 2), dtype=np.float16)), shape=[None, 2])
 
     def call(self, inputs):
+        #print("Inputs:")
+        #print(inputs)
+        #pdb.set_trace()
         h_conv_pol_flat = tf.reshape(inputs, [-1, 80*8*8])
         pdb.set_trace()
         return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1_modified, h_conv_pol_flat.dtype))
@@ -172,6 +175,7 @@ class TFProcess:
             policy_cross_entropy = \
                 tf.nn.softmax_cross_entropy_with_logits(labels=tf.stop_gradient(target),
                                                         logits=output)
+            
             return tf.reduce_mean(input_tensor=policy_cross_entropy)
         self.policy_loss_fn = policy_loss
         def policy_accuracy(target, output):
@@ -363,15 +367,15 @@ class TFProcess:
         for _ in range(steps % total_steps, total_steps):
             self.process_v2(batch_size, test_batches, batch_splits=batch_splits)
 
-    @tf.function()
+    #@tf.function()
     def read_weights(self):
         return [w.read_value() for w in self.model.weights]
 
-    @tf.function()
-    def process_inner_loop(self, x, y, z, q):
+    #@tf.function()
+    def process_inner_loop(self, x, y, z, q, yy):
         with tf.GradientTape() as tape:
             policy, value = self.model(x, training=True)
-            policy_loss = self.policy_loss_fn(y, policy)
+            policy_loss = self.policy_loss_fn(yy, policy)
             reg_term = sum(self.model.losses)
             if self.wdl:
                 value_loss = self.value_loss_fn(self.qMix(z, q), value)
@@ -431,10 +435,15 @@ class TFProcess:
 
         # Run training for this batch
         grads = None
+        counter = 0
         for _ in range(batch_splits):
-            x, y, z, q = next(self.train_iter)
+            print("Counter is: " + str(counter))
+            counter += 1
+            x, y, z, q, yy = next(self.train_iter)
+            pdb.set_trace()
             y = tf.constant(np.random.rand(1024, 2), dtype = np.float32)
-            policy_loss, value_loss, mse_loss, reg_term, new_grads = self.process_inner_loop(x, y, z, q)
+            policy_loss, value_loss, mse_loss, reg_term, new_grads = self.process_inner_loop(x, y, z, q, yy)
+            
             if not grads:
                 grads = new_grads
             else:
@@ -448,6 +457,8 @@ class TFProcess:
                 self.avg_value_loss.append(value_loss)
             self.avg_mse_loss.append(mse_loss)
             self.avg_reg_term.append(reg_term)
+            
+            pdb.set_trace()
         # Gradients of batch splits are summed, not averaged like usual, so need to scale lr accordingly to correct for this.
         self.active_lr = self.lr / batch_splits
         if self.loss_scale != 1:
@@ -455,7 +466,7 @@ class TFProcess:
         max_grad_norm = self.cfg['training'].get('max_grad_norm', 10000.0) * batch_splits
         grads, grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
-
+        pdb.set_trace()
         # Update steps.
         self.global_step.assign_add(1)
         steps = self.global_step.read_value()
@@ -542,21 +553,28 @@ class TFProcess:
         for (old, w) in zip(backup, self.model.weights):
             w.assign(old)
 
-    @tf.function()
-    def calculate_test_summaries_inner_loop(self, x, y, z, q):
+    #@tf.function()
+    def calculate_test_summaries_inner_loop(self, x, y, z, q, yy):
         policy, value = self.model(x, training=False)
-        policy_loss = self.policy_loss_fn(y, policy)
-        policy_accuracy = self.policy_accuracy_fn(y, policy)
+        policy_loss = self.policy_loss_fn(yy, policy)
+        print("policy loss fn finished")
+        # FIX ME
+        # policy_accuracy = self.policy_accuracy_fn(yy, policy)
+        policy_accuracy = 0.0
         # pari: no idea what qMix does
-        if self.wdl:
-            value_loss = self.value_loss_fn(self.qMix(z, q), value)
-            mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
-            value_accuracy = self.accuracy_fn(self.qMix(z,q), value)
-        else:
-            value_loss = self.value_loss_fn(self.qMix(z, q), value)
-            mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
-            value_accuracy = tf.constant(0.)
+        # if self.wdl:
+        #    value_loss = self.value_loss_fn(self.qMix(z, q), value)
+        #    mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
+        #    value_accuracy = self.accuracy_fn(self.qMix(z,q), value)
+        #else:
+        #    value_loss = self.value_loss_fn(self.qMix(z, q), value)
+        #    mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
+        #    value_accuracy = tf.constant(0.)
 
+        value_loss = 0.0
+        mse_loss = 0.0
+        value_accuracy = 0.0
+        
         return policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy
 
     def calculate_test_summaries_v2(self, test_batches, steps):
@@ -566,9 +584,12 @@ class TFProcess:
         sum_mse = 0
         sum_policy = 0
         sum_value = 0
-        for _ in range(0, test_batches):
-            x, y, z, q = next(self.test_iter)
-            policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy = self.calculate_test_summaries_inner_loop(x, y, z, q)
+        for i in range(0, test_batches):
+            x, y, z, q, yy = next(self.test_iter)
+            print("test summaries done")
+            print("Counter: " + str(i))
+            policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy = self.calculate_test_summaries_inner_loop(x, y, z, q, yy)
+            pdb.set_trace()
             sum_policy_accuracy += policy_accuracy
             sum_mse += mse_loss
             sum_policy += policy_loss
@@ -611,7 +632,7 @@ class TFProcess:
 
         print("calculate summaries took: ", time.time()-start)
 
-    @tf.function()
+    # @tf.function()
     def compute_update_ratio_v2(self, before_weights, after_weights, steps):
         """Compute the ratio of gradient norm to weight norm.
 
@@ -763,11 +784,12 @@ class TFProcess:
             flow = self.residual_block_v2(flow, self.RESIDUAL_FILTERS)
         # Policy head
         if self.POLICY_HEAD == NetworkFormat.POLICY_CONVOLUTION:
-            pdb.set_trace()
             conv_pol = self.conv_block_v2(flow, filter_size=3, output_channels=self.RESIDUAL_FILTERS)
             conv_pol2 = tf.keras.layers.Conv2D(80, 3, use_bias=True, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg, data_format='channels_first')(conv_pol)
             h_fc1 = ApplyPolicyMap()(conv_pol2)
         elif self.POLICY_HEAD == NetworkFormat.POLICY_CLASSICAL:
+            pdb.set_trace()
+            print("DENSE LAYER")
             conv_pol = self.conv_block_v2(flow, filter_size=1, output_channels=self.policy_channels)
             h_conv_pol_flat = tf.keras.layers.Flatten()(conv_pol)
             # this determines output layer
