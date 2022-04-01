@@ -55,8 +55,8 @@ class ApplyPolicyMap(tf.keras.layers.Layer):
         #print("Inputs:")
         #print(inputs)
         #pdb.set_trace()
-        h_conv_pol_flat = tf.reshape(inputs, [-1, 2])
-        return h_conv_pol_flat[0:1024, :]
+        h_conv_pol_flat = tf.reshape(inputs, [-1, 5120])
+        return h_conv_pol_flat[:, 0:2]
         #return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1_modified, h_conv_pol_flat.dtype))
         # return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1, h_conv_pol_flat.dtype))
 
@@ -562,21 +562,21 @@ class TFProcess:
         policy_loss = self.policy_loss_fn(yy, policy)
         print("policy loss fn finished")
         # FIX ME
-        # policy_accuracy = self.policy_accuracy_fn(yy, policy)
-        policy_accuracy = 0.0
+        policy_accuracy = self.policy_accuracy_fn(yy, policy)
+        #policy_accuracy = 0.0
         # pari: no idea what qMix does
-        # if self.wdl:
-        #    value_loss = self.value_loss_fn(self.qMix(z, q), value)
-        #    mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
-        #    value_accuracy = self.accuracy_fn(self.qMix(z,q), value)
-        #else:
-        #    value_loss = self.value_loss_fn(self.qMix(z, q), value)
-        #    mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
-        #    value_accuracy = tf.constant(0.)
+        if self.wdl:
+            value_loss = self.value_loss_fn(self.qMix(z, q), value)
+            mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
+            value_accuracy = self.accuracy_fn(self.qMix(z,q), value)
+        else:
+            value_loss = self.value_loss_fn(self.qMix(z, q), value)
+            mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
+            value_accuracy = tf.constant(0.)
 
-        value_loss = 0.0
-        mse_loss = 0.0
-        value_accuracy = 0.0
+        #value_loss = 0.0
+        #mse_loss = 0.0
+        #value_accuracy = 0.0
         
         return policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy
 
