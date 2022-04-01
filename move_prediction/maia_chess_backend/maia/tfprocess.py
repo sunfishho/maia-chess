@@ -55,9 +55,9 @@ class ApplyPolicyMap(tf.keras.layers.Layer):
         #print("Inputs:")
         #print(inputs)
         #pdb.set_trace()
-        h_conv_pol_flat = tf.reshape(inputs, [-1, 80*8*8])
-        pdb.set_trace()
-        return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1_modified, h_conv_pol_flat.dtype))
+        h_conv_pol_flat = tf.reshape(inputs, [-1, 2])
+        return h_conv_pol_flat[0:1024, :]
+        #return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1_modified, h_conv_pol_flat.dtype))
         # return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1, h_conv_pol_flat.dtype))
 
 class TFProcess:
@@ -172,6 +172,9 @@ class TFProcess:
             return target, output
         def policy_loss(target, output):
             target, output = correct_policy(target, output)
+            #print("target shape: " + str(target.shape))
+            #print("output shape: " + str(output.shape))
+            #pdb.set_trace()
             policy_cross_entropy = \
                 tf.nn.softmax_cross_entropy_with_logits(labels=tf.stop_gradient(target),
                                                         logits=output)
