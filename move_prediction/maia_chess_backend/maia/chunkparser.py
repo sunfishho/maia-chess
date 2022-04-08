@@ -27,11 +27,40 @@ import struct
 import tensorflow as tf
 import unittest
 import pdb
+from .policy_index import policy_index
+from .lc0_az_policy_map import *
 
 V4_VERSION = struct.pack('i', 4)
 V3_VERSION = struct.pack('i', 3)
 V4_STRUCT_STRING = '4s7432s832sBBBBBBBbffff'
 V3_STRUCT_STRING = '4s7432s832sBBBBBBBb'
+
+#New function for mapping policy index to squares
+def policy_index_to_squares (index):
+    move = policy_index[index]    
+    start = np.zeros(64)
+    end = np.zeros(64)
+
+    start_square = position_to_index(move[0:2])  #Format: a1 -> (0, 0), h8 -> (7, 7), (col, row)
+    end_square = position_to_index(move[2:])
+    start_col = start_square[0]
+    start_row = start_square[1]
+    end_col = end_square[0]
+    end_row = end_square[1]
+
+    start[start_col + 8*start_row] = 1
+    end[end_col + 8*end_row] = 1
+    
+    return (start, end, promotion)
+
+def np_to_tf(arg):
+  arg = tf.convert_to_tensor(arg, dtype=tf.float32)
+  return arg
+
+def probs_to_moves(probs):
+    
+    return None
+
 
 # Interface for a chunk data source.
 class ChunkDataSrc:
@@ -152,6 +181,7 @@ class ChunkParser:
         winner = tf.io.decode_raw(winner, tf.float32)
         q = tf.io.decode_raw(q, tf.float32)
 
+        
         planes = tf.reshape(planes, (ChunkParser.BATCH_SIZE, 112, 8*8))
         probs = tf.reshape(probs, (ChunkParser.BATCH_SIZE, 1858))
         winner = tf.reshape(winner, (ChunkParser.BATCH_SIZE, 3))
@@ -171,6 +201,11 @@ class ChunkParser:
 
         planes = tf.reshape(planes, (ChunkParser.BATCH_SIZE, 112, 8*8))
         probs = tf.reshape(probs, (ChunkParser.BATCH_SIZE, 1858))
+        
+        #TODO: convert these to numpy
+        #start, end, promotion = policy_index_to_squares(5)        
+        #pdb.set_trace()
+
         probs_modified = tf.ones((ChunkParser.BATCH_SIZE,2))
         winner = tf.reshape(winner, (ChunkParser.BATCH_SIZE, 3))
         q = tf.reshape(q, (ChunkParser.BATCH_SIZE, 3))
