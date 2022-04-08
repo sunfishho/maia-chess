@@ -49,16 +49,10 @@ class ApplyPolicyMap(tf.keras.layers.Layer):
     def __init__(self, **kwargs):
         super(ApplyPolicyMap, self).__init__(**kwargs)
         self.fc1 = tf.constant(make_map())
-        self.fc1_modified = tf.Variable((np.empty((0, 2), dtype=np.float16)), shape=[None, 2])
 
     def call(self, inputs):
-        #print("Inputs:")
-        #print(inputs)
-        #pdb.set_trace()
-        h_conv_pol_flat = tf.reshape(inputs, [-1, 5120])
-        return h_conv_pol_flat[:, 0:2]
-        #return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1_modified, h_conv_pol_flat.dtype))
-        # return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1, h_conv_pol_flat.dtype))
+        h_conv_pol_flat = tf.reshape(inputs, [-1, 80*8*8])
+        return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1, h_conv_pol_flat.dtype))
 
 class TFProcess:
     def __init__(self, cfg, name, collection_name):
@@ -172,13 +166,9 @@ class TFProcess:
             return target, output
         def policy_loss(target, output):
             target, output = correct_policy(target, output)
-            #print("target shape: " + str(target.shape))
-            #print("output shape: " + str(output.shape))
-            #pdb.set_trace()
             policy_cross_entropy = \
                 tf.nn.softmax_cross_entropy_with_logits(labels=tf.stop_gradient(target),
                                                         logits=output)
-            
             return tf.reduce_mean(input_tensor=policy_cross_entropy)
         self.policy_loss_fn = policy_loss
         def policy_accuracy(target, output):
@@ -370,15 +360,15 @@ class TFProcess:
         for _ in range(steps % total_steps, total_steps):
             self.process_v2(batch_size, test_batches, batch_splits=batch_splits)
 
-    #@tf.function()
+    @tf.function()
     def read_weights(self):
         return [w.read_value() for w in self.model.weights]
 
-    #@tf.function()
-    def process_inner_loop(self, x, y, z, q, yy):
+    @tf.function()
+    def process_inner_loop(self, x, y, z, q):
         with tf.GradientTape() as tape:
             policy, value = self.model(x, training=True)
-            policy_loss = self.policy_loss_fn(yy, policy)
+            policy_loss = self.policy_loss_fn(y, policy)
             reg_term = sum(self.model.losses)
             if self.wdl:
                 value_loss = self.value_loss_fn(self.qMix(z, q), value)
@@ -438,14 +428,9 @@ class TFProcess:
 
         # Run training for this batch
         grads = None
-        counter = 0
         for _ in range(batch_splits):
-            counter += 1
-            x, y, z, q, yy = next(self.train_iter)
-            # pdb.set_trace()
-            y = tf.constant(np.random.rand(1024, 2), dtype = np.float32)
-            policy_loss, value_loss, mse_loss, reg_term, new_grads = self.process_inner_loop(x, y, z, q, yy)
-            
+            x, y, z, q = next(self.train_iter)
+            policy_loss, value_loss, mse_loss, reg_term, new_grads = self.process_inner_loop(x, y, z, q)
             if not grads:
                 grads = new_grads
             else:
@@ -459,8 +444,6 @@ class TFProcess:
                 self.avg_value_loss.append(value_loss)
             self.avg_mse_loss.append(mse_loss)
             self.avg_reg_term.append(reg_term)
-            
-            # pdb.set_trace()
         # Gradients of batch splits are summed, not averaged like usual, so need to scale lr accordingly to correct for this.
         self.active_lr = self.lr / batch_splits
         if self.loss_scale != 1:
@@ -468,7 +451,7 @@ class TFProcess:
         max_grad_norm = self.cfg['training'].get('max_grad_norm', 10000.0) * batch_splits
         grads, grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
-        # pdb.set_trace()
+
         # Update steps.
         self.global_step.assign_add(1)
         steps = self.global_step.read_value()
@@ -555,14 +538,11 @@ class TFProcess:
         for (old, w) in zip(backup, self.model.weights):
             w.assign(old)
 
-    #@tf.function()
-    def calculate_test_summaries_inner_loop(self, x, y, z, q, yy):
+    @tf.function()
+    def calculate_test_summaries_inner_loop(self, x, y, z, q):
         policy, value = self.model(x, training=False)
-        policy_loss = self.policy_loss_fn(yy, policy)
-        print("policy loss fn finished")
-        # FIX ME
-        policy_accuracy = self.policy_accuracy_fn(yy, policy)
-        #policy_accuracy = 0.0
+        policy_loss = self.policy_loss_fn(y, policy)
+        policy_accuracy = self.policy_accuracy_fn(y, policy)
         # pari: no idea what qMix does
         if self.wdl:
             value_loss = self.value_loss_fn(self.qMix(z, q), value)
@@ -573,10 +553,6 @@ class TFProcess:
             mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
             value_accuracy = tf.constant(0.)
 
-        value_loss = 0.0
-        mse_loss = 0.0
-        value_accuracy = 0.0
-        
         return policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy
 
     def calculate_test_summaries_v2(self, test_batches, steps):
@@ -586,12 +562,9 @@ class TFProcess:
         sum_mse = 0
         sum_policy = 0
         sum_value = 0
-        for i in range(0, test_batches):
-            x, y, z, q, yy = next(self.test_iter)
-            print("test summaries done")
-            # print("Counter: " + str(i))
-            policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy = self.calculate_test_summaries_inner_loop(x, y, z, q, yy)
-            # pdb.set_trace()
+        for _ in range(0, test_batches):
+            x, y, z, q = next(self.test_iter)
+            policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy = self.calculate_test_summaries_inner_loop(x, y, z, q)
             sum_policy_accuracy += policy_accuracy
             sum_mse += mse_loss
             sum_policy += policy_loss
@@ -634,10 +607,9 @@ class TFProcess:
 
         print("calculate summaries took: ", time.time()-start)
 
-    # @tf.function()
+    @tf.function()
     def compute_update_ratio_v2(self, before_weights, after_weights, steps):
         """Compute the ratio of gradient norm to weight norm.
-
         Adapted from https://github.com/tensorflow/minigo/blob/c923cd5b11f7d417c9541ad61414bf175a84dc31/dual_net.py#L567
         """
         deltas = [after - before for after,
@@ -666,85 +638,84 @@ class TFProcess:
             w.assign(old)
 
     def save_leelaz_weights_v2(self, filename):
-        return 0
-        # all_tensors = []
-        # all_weights = []
-        # last_was_gamma = False
-        # for weights in self.model.weights:
-        #     work_weights = None
-        #     if weights.shape.ndims == 4:
-        #         # Convolution weights need a transpose
-        #         #
-        #         # TF (kYXInputOutput)
-        #         # [filter_height, filter_width, in_channels, out_channels]
-        #         #
-        #         # Leela/cuDNN/Caffe (kOutputInputYX)
-        #         # [output, input, filter_size, filter_size]
-        #         work_weights = tf.transpose(a=weights, perm=[3, 2, 0, 1])
-        #     elif weights.shape.ndims == 2:
-        #         # Fully connected layers are [in, out] in TF
-        #         #
-        #         # [out, in] in Leela
-        #         #
-        #         work_weights = tf.transpose(a=weights, perm=[1, 0])
-        #     else:
-        #         # batch renorm has extra weights, but we don't know what to do with them.
-        #         if 'renorm' in weights.name:
-        #             continue
-        #         # renorm has variance, but it is not the primary source of truth
-        #         if 'variance:' in weights.name and self.renorm_enabled:
-        #             continue
-        #         # Renorm has moving stddev not variance, undo the transform to make it compatible.
-        #         if 'stddev:' in weights.name:
-        #             all_tensors.append(tf.math.square(weights) - 1e-5)
-        #             continue
-        #         # Biases, batchnorm etc
-        #         # pb expects every batch norm to have gammas, but not all of our
-        #         # batch norms have gammas, so manually add pretend gammas.
-        #         if 'beta:' in weights.name and not last_was_gamma:
-        #             all_tensors.append(tf.ones_like(weights))
-        #         work_weights = weights.read_value()
-        #     all_tensors.append(work_weights)
-        #     last_was_gamma = 'gamma:' in weights.name
+        all_tensors = []
+        all_weights = []
+        last_was_gamma = False
+        for weights in self.model.weights:
+            work_weights = None
+            if weights.shape.ndims == 4:
+                # Convolution weights need a transpose
+                #
+                # TF (kYXInputOutput)
+                # [filter_height, filter_width, in_channels, out_channels]
+                #
+                # Leela/cuDNN/Caffe (kOutputInputYX)
+                # [output, input, filter_size, filter_size]
+                work_weights = tf.transpose(a=weights, perm=[3, 2, 0, 1])
+            elif weights.shape.ndims == 2:
+                # Fully connected layers are [in, out] in TF
+                #
+                # [out, in] in Leela
+                #
+                work_weights = tf.transpose(a=weights, perm=[1, 0])
+            else:
+                # batch renorm has extra weights, but we don't know what to do with them.
+                if 'renorm' in weights.name:
+                    continue
+                # renorm has variance, but it is not the primary source of truth
+                if 'variance:' in weights.name and self.renorm_enabled:
+                    continue
+                # Renorm has moving stddev not variance, undo the transform to make it compatible.
+                if 'stddev:' in weights.name:
+                    all_tensors.append(tf.math.square(weights) - 1e-5)
+                    continue
+                # Biases, batchnorm etc
+                # pb expects every batch norm to have gammas, but not all of our
+                # batch norms have gammas, so manually add pretend gammas.
+                if 'beta:' in weights.name and not last_was_gamma:
+                    all_tensors.append(tf.ones_like(weights))
+                work_weights = weights.read_value()
+            all_tensors.append(work_weights)
+            last_was_gamma = 'gamma:' in weights.name
 
-        # # HACK: model weights ordering is some kind of breadth first traversal,
-        # # but pb expects a specific ordering which BFT is not a match for once
-        # # we get to the heads. Apply manual permutation.
-        # # This is fragile and at minimum should have some checks to ensure it isn't breaking things.
-        # #TODO: also support classic policy head as it has a different set of layers and hence changes the permutation.
-        # permuted_tensors = [w for w in all_tensors]
-        # permuted_tensors[-5] = all_tensors[-11]
-        # permuted_tensors[-6] = all_tensors[-12]
-        # permuted_tensors[-7] = all_tensors[-13]
-        # permuted_tensors[-8] = all_tensors[-14]
-        # permuted_tensors[-9] = all_tensors[-16]
-        # permuted_tensors[-10] = all_tensors[-5]
-        # permuted_tensors[-11] = all_tensors[-6]
-        # permuted_tensors[-12] = all_tensors[-7]
-        # permuted_tensors[-13] = all_tensors[-8]
-        # permuted_tensors[-14] = all_tensors[-9]
-        # permuted_tensors[-15] = all_tensors[-10]
-        # permuted_tensors[-16] = all_tensors[-15]
-        # all_tensors = permuted_tensors
+        # HACK: model weights ordering is some kind of breadth first traversal,
+        # but pb expects a specific ordering which BFT is not a match for once
+        # we get to the heads. Apply manual permutation.
+        # This is fragile and at minimum should have some checks to ensure it isn't breaking things.
+        #TODO: also support classic policy head as it has a different set of layers and hence changes the permutation.
+        permuted_tensors = [w for w in all_tensors]
+        permuted_tensors[-5] = all_tensors[-11]
+        permuted_tensors[-6] = all_tensors[-12]
+        permuted_tensors[-7] = all_tensors[-13]
+        permuted_tensors[-8] = all_tensors[-14]
+        permuted_tensors[-9] = all_tensors[-16]
+        permuted_tensors[-10] = all_tensors[-5]
+        permuted_tensors[-11] = all_tensors[-6]
+        permuted_tensors[-12] = all_tensors[-7]
+        permuted_tensors[-13] = all_tensors[-8]
+        permuted_tensors[-14] = all_tensors[-9]
+        permuted_tensors[-15] = all_tensors[-10]
+        permuted_tensors[-16] = all_tensors[-15]
+        all_tensors = permuted_tensors
 
-        # for e, nparray in enumerate(all_tensors):
-        #     # Rescale rule50 related weights as clients do not normalize the input.
-        #     if e == 0:
-        #         num_inputs = 112
-        #         # 50 move rule is the 110th input, or 109 starting from 0.
-        #         rule50_input = 109
-        #         wt_flt = []
-        #         for i, weight in enumerate(np.ravel(nparray)):
-        #             if (i % (num_inputs*9))//9 == rule50_input:
-        #                 wt_flt.append(weight/99)
-        #             else:
-        #                 wt_flt.append(weight)
-        #     else:
-        #         wt_flt = [wt for wt in np.ravel(nparray)]
-        #     all_weights.append(wt_flt)
+        for e, nparray in enumerate(all_tensors):
+            # Rescale rule50 related weights as clients do not normalize the input.
+            if e == 0:
+                num_inputs = 112
+                # 50 move rule is the 110th input, or 109 starting from 0.
+                rule50_input = 109
+                wt_flt = []
+                for i, weight in enumerate(np.ravel(nparray)):
+                    if (i % (num_inputs*9))//9 == rule50_input:
+                        wt_flt.append(weight/99)
+                    else:
+                        wt_flt.append(weight)
+            else:
+                wt_flt = [wt for wt in np.ravel(nparray)]
+            all_weights.append(wt_flt)
 
-        # # self.net.fill_net(all_weights)
-        # # self.net.save_proto(filename)
+        self.net.fill_net(all_weights)
+        self.net.save_proto(filename)
 
     def batch_norm_v2(self, input, scale=False):
         if self.renorm_enabled:
@@ -791,11 +762,8 @@ class TFProcess:
             conv_pol2 = tf.keras.layers.Conv2D(80, 3, use_bias=True, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg, data_format='channels_first')(conv_pol)
             h_fc1 = ApplyPolicyMap()(conv_pol2)
         elif self.POLICY_HEAD == NetworkFormat.POLICY_CLASSICAL:
-            # pdb.set_trace()
-            print("DENSE LAYER")
             conv_pol = self.conv_block_v2(flow, filter_size=1, output_channels=self.policy_channels)
             h_conv_pol_flat = tf.keras.layers.Flatten()(conv_pol)
-            # this determines output layer
             h_fc1 = tf.keras.layers.Dense(1858, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(h_conv_pol_flat)
         else:
             raise ValueError(

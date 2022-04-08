@@ -63,7 +63,9 @@ def main(config_path, name, collection_name):
     root_dir = os.path.join('models', collection_name, name)
     if not os.path.exists(root_dir):
         os.makedirs(root_dir)
-    tfprocess = maia_chess_backend.maia.TFProcess(cfg, name, collection_name)
+        
+    #Change this line to TFProcess to run with original code (i.e. not the discriminator)
+    tfprocess = maia_chess_backend.maia.TFProcessDiscriminator(cfg, name, collection_name)
 
     if experimental_parser:
         assert False
@@ -78,7 +80,7 @@ def main(config_path, name, collection_name):
                 workers=1)
         train_dataset = tf.data.Dataset.from_generator(
             train_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
-        train_dataset = train_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function)
+        train_dataset = train_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function_discriminator)
         train_dataset = train_dataset.prefetch(4)
 
     shuffle_size = int(shuffle_size)
@@ -94,7 +96,8 @@ def main(config_path, name, collection_name):
                 workers=1)
         test_dataset = tf.data.Dataset.from_generator(
             test_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
-        test_dataset = test_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function)
+        # below must be changed to parse_function if it is not the discriminator being used
+        test_dataset = test_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function_discriminator)
         test_dataset = test_dataset.prefetch(4)
 
     tfprocess.init_v2(train_dataset, test_dataset)

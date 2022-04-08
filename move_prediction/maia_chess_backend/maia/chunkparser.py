@@ -154,6 +154,23 @@ class ChunkParser:
 
         planes = tf.reshape(planes, (ChunkParser.BATCH_SIZE, 112, 8*8))
         probs = tf.reshape(probs, (ChunkParser.BATCH_SIZE, 1858))
+        winner = tf.reshape(winner, (ChunkParser.BATCH_SIZE, 3))
+        q = tf.reshape(q, (ChunkParser.BATCH_SIZE, 3))
+
+        return (planes, probs, winner, q)
+        
+    @staticmethod
+    def parse_function_discriminator(planes, probs, winner, q):
+        """
+        Convert unpacked record batches to tensors for tensorflow training
+        """
+        planes = tf.io.decode_raw(planes, tf.float32)
+        probs = tf.io.decode_raw(probs, tf.float32)
+        winner = tf.io.decode_raw(winner, tf.float32)
+        q = tf.io.decode_raw(q, tf.float32)
+
+        planes = tf.reshape(planes, (ChunkParser.BATCH_SIZE, 112, 8*8))
+        probs = tf.reshape(probs, (ChunkParser.BATCH_SIZE, 1858))
         probs_modified = tf.ones((ChunkParser.BATCH_SIZE,2))
         winner = tf.reshape(winner, (ChunkParser.BATCH_SIZE, 3))
         q = tf.reshape(q, (ChunkParser.BATCH_SIZE, 3))
