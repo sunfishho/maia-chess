@@ -21,7 +21,44 @@ import pdb
 logger = logging.getLogger("wandb")
 logger.setLevel(logging.ERROR)
 
-SKIP = 1
+
+import numpy as np
+from maia_chess_backend.maia.policy_index import policy_index
+from maia_chess_backend.maia.lc0_az_policy_map import *
+
+SKIP = 64
+
+#New function for mapping policy index to squares
+def policy_index_to_squares (index):
+    move = policy_index[index]    
+    start = np.zeros(64)
+    end = np.zeros(64)
+    promotion = np.zeros(64) #TODO
+
+    start_square = position_to_index(move[0:2])  #Format: a1 -> (0, 0), h8 -> (7, 7), (col, row)
+    end_square = position_to_index(move[2:])
+    start_col = start_square[0]
+    start_row = start_square[1]
+    end_col = end_square[0]
+    end_row = end_square[1]
+
+    start[start_col + 8*start_row] = 1
+    end[end_col + 8*end_row] = 1
+    
+    return (start, end, promotion)
+
+def gen_discriminator_data(x, y):
+    #pdb.set_trace()
+    y = y.numpy()
+    x = x.numpy()
+    arg_max_y = np.argmax(y, axis=1)
+    concats = []
+    for arg in arg_max_y:
+        start, end, promotion = policy_index_to_squares(arg)
+        concats.append(np.stack([start, end, promotion]))
+    concats = np.stack(concats)
+    x = np.concatenate([x, concats], axis=1)
+    return (x, y)
 
 #@maia_chess_backend.logged_main
 def main(config_path, name, collection_name):
@@ -100,6 +137,16 @@ def main(config_path, name, collection_name):
     tfprocess.init_v2(train_dataset, test_dataset)
 
     tfprocess.restore_v2()
+
+    #pdb.set_trace()
+
+    trainiter = iter(train_dataset)
+    
+    for i in range(10):
+        data = next(trainiter)
+        x = data[0]
+        y = data[1]
+        new_x, new_y = gen_discriminator_data(x, y)
 
     # pari: what is the "the 10 samples per test game" mentioned in the
     # comment below? how are these sampled -- aren't we looping through all

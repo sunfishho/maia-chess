@@ -40,6 +40,7 @@ def policy_index_to_squares (index):
     move = policy_index[index]    
     start = np.zeros(64)
     end = np.zeros(64)
+    promotion = np.zeros(64) #TODO
 
     start_square = position_to_index(move[0:2])  #Format: a1 -> (0, 0), h8 -> (7, 7), (col, row)
     end_square = position_to_index(move[2:])
@@ -52,6 +53,8 @@ def policy_index_to_squares (index):
     end[end_col + 8*end_row] = 1
     
     return (start, end, promotion)
+
+
 
 def np_to_tf(arg):
   arg = tf.convert_to_tensor(arg, dtype=tf.float32)
