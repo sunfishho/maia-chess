@@ -209,7 +209,11 @@ class ChunkParser:
         #start, end, promotion = policy_index_to_squares(5)        
         #pdb.set_trace()
 
-        probs_modified = tf.ones((ChunkParser.BATCH_SIZE,2))
+        x = tf.math.round(tf.random.uniform((ChunkParser.BATCH_SIZE,),0,1))
+        
+        
+        probs_modified = tf.stack([x, tf.ones(ChunkParser.BATCH_SIZE) - x], axis = 1)
+
         winner = tf.reshape(winner, (ChunkParser.BATCH_SIZE, 3))
         q = tf.reshape(q, (ChunkParser.BATCH_SIZE, 3))
 
