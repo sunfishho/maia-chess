@@ -30,7 +30,7 @@ SKIP = 64
 
 #New function for mapping policy index to squares
 def policy_index_to_squares (index):
-    move = policy_index[index]    
+    move = policy_index[index]
     start = np.zeros(64)
     end = np.zeros(64)
     promotion = np.zeros(64) #TODO
@@ -44,20 +44,24 @@ def policy_index_to_squares (index):
 
     start[start_col + 8*start_row] = 1
     end[end_col + 8*end_row] = 1
-    
+
     return (start, end, promotion)
 
 def gen_discriminator_data(x, y):
     #pdb.set_trace()
     y = y.numpy()
     x = x.numpy()
+    x = x[0:2, :]
+    y = y[0:2, :]
     arg_max_y = np.argmax(y, axis=1)
     concats = []
-    for arg in arg_max_y:
+    for i, arg in enumerate(arg_max_y):
+        if i > 2: break
         start, end, promotion = policy_index_to_squares(arg)
         concats.append(np.stack([start, end, promotion]))
     concats = np.stack(concats)
     x = np.concatenate([x, concats], axis=1)
+    print('gen discrim data end')
     return (x, y)
 
 #@maia_chess_backend.logged_main
@@ -100,7 +104,7 @@ def main(config_path, name, collection_name):
     root_dir = os.path.join('models', collection_name, name)
     if not os.path.exists(root_dir):
         os.makedirs(root_dir)
-        
+
     #Change this line to TFProcess to run with original code (i.e. not the discriminator)
     tfprocess = maia_chess_backend.maia.TFProcessDiscriminator(cfg, name, collection_name)
 
@@ -137,19 +141,24 @@ def main(config_path, name, collection_name):
         test_dataset = test_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function_discriminator)
         test_dataset = test_dataset.prefetch(4)
 
-    tfprocess.init_v2(train_dataset, test_dataset)
-
-    tfprocess.restore_v2()
-
     #pdb.set_trace()
+    # print('before iter')
+    # trainiter = iter(train_dataset)
+    # new_data = []
+    # for i in range(2):
+    #     data = next(trainiter)
+    #     x = data[0]
+    #     y = data[1]
+    #     new_x, new_y = gen_discriminator_data(x, y)
+    #     new_data.append((new_x, new_y))
+    #
+    # print('after loop')
+    #
+    # discriminator_dataset = tf.data.Dataset.from_tensors(new_data)
+    # pdb.set_trace()
 
-    trainiter = iter(train_dataset)
-    
-    for i in range(10):
-        data = next(trainiter)
-        x = data[0]
-        y = data[1]
-        new_x, new_y = gen_discriminator_data(x, y)
+    tfprocess.init_v2(train_dataset, test_dataset)
+    tfprocess.restore_v2()
 
     # pari: what is the "the 10 samples per test game" mentioned in the
     # comment below? how are these sampled -- aren't we looping through all

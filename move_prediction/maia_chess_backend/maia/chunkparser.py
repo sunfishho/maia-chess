@@ -35,9 +35,14 @@ V3_VERSION = struct.pack('i', 3)
 V4_STRUCT_STRING = '4s7432s832sBBBBBBBbffff'
 V3_STRUCT_STRING = '4s7432s832sBBBBBBBb'
 
+import numpy as np
+from maia_chess_backend.maia.policy_index import policy_index
+from maia_chess_backend.maia.lc0_az_policy_map import *
+
+
 #New function for mapping policy index to squares
 def policy_index_to_squares (index):
-    move = policy_index[index]    
+    move = policy_index[index]
     start = np.zeros(64)
     end = np.zeros(64)
     promotion = np.zeros(64) #TODO
@@ -51,18 +56,21 @@ def policy_index_to_squares (index):
 
     start[start_col + 8*start_row] = 1
     end[end_col + 8*end_row] = 1
-    
+
     return (start, end, promotion)
 
-
-
-def np_to_tf(arg):
-  arg = tf.convert_to_tensor(arg, dtype=tf.float32)
-  return arg
-
-def probs_to_moves(probs):
-    
-    return None
+def gen_discriminator_data(x, y):
+    #pdb.set_trace()
+    y = y.numpy()
+    x = x.numpy()
+    arg_max_y = np.argmax(y, axis=1)
+    concats = []
+    for arg in arg_max_y:
+        start, end, promotion = policy_index_to_squares(arg)
+        concats.append(np.stack([start, end, promotion]))
+    concats = np.stack(concats)
+    x = np.concatenate([x, concats], axis=1)
+    return (x, y)
 
 
 # Interface for a chunk data source.
@@ -184,14 +192,14 @@ class ChunkParser:
         winner = tf.io.decode_raw(winner, tf.float32)
         q = tf.io.decode_raw(q, tf.float32)
 
-        
+
         planes = tf.reshape(planes, (ChunkParser.BATCH_SIZE, 112, 8*8))
         probs = tf.reshape(probs, (ChunkParser.BATCH_SIZE, 1858))
         winner = tf.reshape(winner, (ChunkParser.BATCH_SIZE, 3))
         q = tf.reshape(q, (ChunkParser.BATCH_SIZE, 3))
 
         return (planes, probs, winner, q)
-        
+
     @staticmethod
     def parse_function_discriminator(planes, probs, winner, q):
         """
@@ -203,19 +211,31 @@ class ChunkParser:
         q = tf.io.decode_raw(q, tf.float32)
 
         planes = tf.reshape(planes, (ChunkParser.BATCH_SIZE, 112, 8*8))
+        # print(planes.shape)
+        # planes = tf.concat([planes, planes], axis=0)
+        # print(planes.shape)
+
         probs = tf.reshape(probs, (ChunkParser.BATCH_SIZE, 1858))
-        
+        # probs = tf.concat([probs, probs], axis=0)
+
         #TODO: convert these to numpy
-        #start, end, promotion = policy_index_to_squares(5)        
+        #start, end, promotion = policy_index_to_squares(5)
         #pdb.set_trace()
 
         x = tf.math.round(tf.random.uniform((ChunkParser.BATCH_SIZE,),0,1))
-        
-        
         probs_modified = tf.stack([x, tf.ones(ChunkParser.BATCH_SIZE) - x], axis = 1)
+        # probs_modified = tf.concat([probs_modified, probs_modified], axis=0)
 
         winner = tf.reshape(winner, (ChunkParser.BATCH_SIZE, 3))
+        # winner = tf.concat([winner, winner], axis=0)
+
         q = tf.reshape(q, (ChunkParser.BATCH_SIZE, 3))
+        # q = tf.concat([q, q], axis=0)
+
+        # new_x, new_y = gen_discriminator_data(planes, probs)
+        # print('new')
+        # print(new_x.shape)
+        # print(new_y.shape)
 
         return (planes, probs, winner, q, probs_modified)
 

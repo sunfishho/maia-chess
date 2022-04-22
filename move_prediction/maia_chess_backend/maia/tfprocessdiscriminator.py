@@ -146,8 +146,9 @@ class TFProcessDiscriminator:
     def init_net_v2(self):
         self.l2reg = tf.keras.regularizers.l2(l=0.5 * (0.0001))
         input_var = tf.keras.Input(shape=(112, 8*8))
+        input_labels = tf.keras.Input(shape=1858, dtype=tf.float16)
         x_planes = tf.keras.layers.Reshape([112, 8, 8])(input_var)
-        self.model = tf.keras.Model(inputs=input_var, outputs=self.construct_net_v2(x_planes))
+        self.model = tf.keras.Model(inputs=(input_var, input_labels), outputs=self.construct_net_v2((x_planes, input_labels)))
         # swa_count initialized reguardless to make checkpoint code simpler.
         self.swa_count = tf.Variable(0., name='swa_count', trainable=False)
         self.swa_weights = None
@@ -380,7 +381,8 @@ class TFProcessDiscriminator:
     #@tf.function()
     def process_inner_loop(self, x, y, z, q, yy):
         with tf.GradientTape() as tape:
-            policy, value = self.model(x, training=True)
+            # pdb.set_trace()
+            policy, value = self.model((x, y), training=True)
             policy_loss = self.policy_loss_fn(yy, policy)
             reg_term = sum(self.model.losses)
             if self.wdl:
@@ -446,7 +448,8 @@ class TFProcessDiscriminator:
             counter += 1
             x, y, z, q, yy = next(self.train_iter)
             # pdb.set_trace()
-            y = tf.constant(np.random.rand(1024, 2), dtype = np.float32)
+            # Commentted this line. Not sure what this was for.
+            # y = tf.constant(np.random.rand(1024, 2), dtype = np.float32)
             policy_loss, value_loss, mse_loss, reg_term, new_grads = self.process_inner_loop(x, y, z, q, yy)
 
             if not grads:
@@ -560,7 +563,8 @@ class TFProcessDiscriminator:
 
     #@tf.function()
     def calculate_test_summaries_inner_loop(self, x, y, z, q, yy):
-        policy, value = self.model(x, training=False)
+        pdb.set_trace()
+        policy, value = self.model((x, y), training=False)
         policy_loss = self.policy_loss_fn(yy, policy)
         print("policy loss fn finished")
         # FIX ME
@@ -785,7 +789,11 @@ class TFProcessDiscriminator:
         return tf.keras.layers.Activation('relu')(tf.keras.layers.add([inputs, out2]))
 
     def construct_net_v2(self, inputs):
+        move = inputs[1]
+        inputs = inputs[0]
+        # pdb.set_trace()
         flow = self.conv_block_v2(inputs, filter_size=3, output_channels=self.RESIDUAL_FILTERS, bn_scale=True)
+
         for _ in range(0, self.RESIDUAL_BLOCKS):
             flow = self.residual_block_v2(flow, self.RESIDUAL_FILTERS)
         # Policy head
@@ -794,13 +802,16 @@ class TFProcessDiscriminator:
             conv_pol2 = tf.keras.layers.Conv2D(80, 3, use_bias=True, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg, data_format='channels_first')(conv_pol)
             # print(conv_pol2.shape)
             conv_pol2_flat = tf.reshape(conv_pol2, [-1, 80*8*8])
-            print(conv_pol2_flat.shape)
+            # print(conv_pol2_flat.shape)
+            final_flat = tf.concat([conv_pol2_flat, move], axis=1)
+            pdb.set_trace()
+
+            # print(conv_pol2_flat.shape)
             # print('hey hey')
             # h_fc1 = ApplyPolicyMapDiscriminator()(conv_pol2)
             # print(h_fc1.shape)
-            print("meep")
-            h_fc1 = tf.keras.layers.Dense(2, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(conv_pol2_flat)
-            print(h_fc1.shape)
+            h_fc1 = tf.keras.layers.Dense(2, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(final_flat)
+            # print(h_fc1.shape)
         elif self.POLICY_HEAD == NetworkFormat.POLICY_CLASSICAL:
             # pdb.set_trace()
             print("DENSE LAYER")
