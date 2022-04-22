@@ -51,13 +51,14 @@ class ApplyPolicyMapDiscriminator(tf.keras.layers.Layer):
     def __init__(self, **kwargs):
         super(ApplyPolicyMapDiscriminator, self).__init__(**kwargs)
         self.fc1 = tf.constant(make_map())
-        self.fc1_modified = tf.Variable((np.empty((0, 2), dtype=np.float16)), shape=[None, 2])
+        # self.fc1_modified = tf.Variable((np.empty((0, 2), dtype=np.float16)), shape=[None, 2])
 
     def call(self, inputs):
         #print("Inputs:")
-        #print(inputs)
+        print(inputs.shape)
         #pdb.set_trace()
-        h_conv_pol_flat = tf.reshape(inputs, [-1, 5120])
+        h_conv_pol_flat = tf.reshape(inputs, [-1, 80*8*8]) # None x 5120
+        print(h_conv_pol_flat.shape)
         return h_conv_pol_flat[:, 0:2]
         #return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1_modified, h_conv_pol_flat.dtype))
         # return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1, h_conv_pol_flat.dtype))
@@ -174,13 +175,13 @@ class TFProcessDiscriminator:
             return target, output
         def policy_loss(target, output):
             target, output = correct_policy(target, output)
-            #print("target shape: " + str(target.shape))
-            #print("output shape: " + str(output.shape))
-            #pdb.set_trace()
+            # print("target shape: " + str(target.shape))
+            # print("output shape: " + str(output.shape))
+            # pdb.set_trace()
             policy_cross_entropy = \
                 tf.nn.softmax_cross_entropy_with_logits(labels=tf.stop_gradient(target),
                                                         logits=output)
-            
+
             return tf.reduce_mean(input_tensor=policy_cross_entropy)
         self.policy_loss_fn = policy_loss
         def policy_accuracy(target, output):
@@ -447,7 +448,7 @@ class TFProcessDiscriminator:
             # pdb.set_trace()
             y = tf.constant(np.random.rand(1024, 2), dtype = np.float32)
             policy_loss, value_loss, mse_loss, reg_term, new_grads = self.process_inner_loop(x, y, z, q, yy)
-            
+
             if not grads:
                 grads = new_grads
             else:
@@ -461,7 +462,7 @@ class TFProcessDiscriminator:
                 self.avg_value_loss.append(value_loss)
             self.avg_mse_loss.append(mse_loss)
             self.avg_reg_term.append(reg_term)
-            
+
             # pdb.set_trace()
         # Gradients of batch splits are summed, not averaged like usual, so need to scale lr accordingly to correct for this.
         self.active_lr = self.lr / batch_splits
@@ -578,7 +579,7 @@ class TFProcessDiscriminator:
         value_loss = 0.0
         mse_loss = 0.0
         value_accuracy = 0.0
-        
+
         return policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy
 
     def calculate_test_summaries_v2(self, test_batches, steps):
@@ -627,7 +628,7 @@ class TFProcessDiscriminator:
 
         printWithDate("step {}, policy={:g} value={:g} policy accuracy={:g}% value accuracy={:g}% mse={:g}".\
             format(steps, sum_policy, sum_value, sum_policy_accuracy, sum_value_accuracy, sum_mse))
-    
+
         wandb.log({"Test Policy Loss": sum_policy , "step":steps})
         wandb.log({"Test Value Loss": sum_value , "step":steps})
         wandb.log({"Test MSE Loss": sum_mse , "step":steps})
@@ -791,7 +792,15 @@ class TFProcessDiscriminator:
         if self.POLICY_HEAD == NetworkFormat.POLICY_CONVOLUTION:
             conv_pol = self.conv_block_v2(flow, filter_size=3, output_channels=self.RESIDUAL_FILTERS)
             conv_pol2 = tf.keras.layers.Conv2D(80, 3, use_bias=True, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg, data_format='channels_first')(conv_pol)
-            h_fc1 = ApplyPolicyMapDiscriminator()(conv_pol2)
+            # print(conv_pol2.shape)
+            conv_pol2_flat = tf.reshape(conv_pol2, [-1, 80*8*8])
+            print(conv_pol2_flat.shape)
+            # print('hey hey')
+            # h_fc1 = ApplyPolicyMapDiscriminator()(conv_pol2)
+            # print(h_fc1.shape)
+            print("meep")
+            h_fc1 = tf.keras.layers.Dense(2, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(conv_pol2_flat)
+            print(h_fc1.shape)
         elif self.POLICY_HEAD == NetworkFormat.POLICY_CLASSICAL:
             # pdb.set_trace()
             print("DENSE LAYER")
@@ -802,6 +811,8 @@ class TFProcessDiscriminator:
         else:
             raise ValueError(
                 "Unknown policy head type {}".format(self.POLICY_HEAD))
+
+        # h_fc4 = tf.keras.layers.Dense(2, input_shape=(None, 5120), kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)
 
         # Value head
         conv_val = self.conv_block_v2(flow, filter_size=1, output_channels=32)
