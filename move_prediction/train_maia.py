@@ -6,6 +6,7 @@ import sys
 import glob
 import gzip
 import random
+import time
 #import multiprocessing
 
 import tensorflow as tf
@@ -28,7 +29,7 @@ from maia_chess_backend.maia.lc0_az_policy_map import *
 
 SKIP = 64
 
-#New function for mapping policy index to squares
+# #New function for mapping policy index to squares
 def policy_index_to_squares (index):
     move = policy_index[index]
     start = np.zeros(64)
@@ -48,11 +49,10 @@ def policy_index_to_squares (index):
     return (start, end, promotion)
 
 def gen_discriminator_data(x, y):
-    #pdb.set_trace()
+    final_x = np.zeros((1024, 115, 64))
     y = y.numpy()
-    x = x.numpy()
-    x = x[0:2, :]
-    y = y[0:2, :]
+    # line below is the limiting factor time-wise
+    final_x[:, 0:112, :] = x.numpy()
     arg_max_y = np.argmax(y, axis=1)
     concats = []
     for i, arg in enumerate(arg_max_y):
@@ -60,9 +60,8 @@ def gen_discriminator_data(x, y):
         start, end, promotion = policy_index_to_squares(arg)
         concats.append(np.stack([start, end, promotion]))
     concats = np.stack(concats)
-    x = np.concatenate([x, concats], axis=1)
-    print('gen discrim data end')
-    return (x, y)
+    final_x[:, 112:115, :] = concats
+    return (final_x, y)
 
 #@maia_chess_backend.logged_main
 def main(config_path, name, collection_name):
