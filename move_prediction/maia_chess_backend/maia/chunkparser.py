@@ -222,8 +222,8 @@ class ChunkParser:
         #start, end, promotion = policy_index_to_squares(5)
         #pdb.set_trace()
 
-        x = tf.math.round(tf.random.uniform((ChunkParser.BATCH_SIZE,),0,1))
-        probs_modified = tf.stack([x, tf.ones(ChunkParser.BATCH_SIZE) - x], axis = 1)
+        # x = tf.math.round(tf.random.uniform((ChunkParser.BATCH_SIZE,),0,1))
+        # probs_modified = tf.stack([x, tf.ones(ChunkParser.BATCH_SIZE) - x], axis = 1)
         # probs_modified = tf.concat([probs_modified, probs_modified], axis=0)
 
         winner = tf.reshape(winner, (ChunkParser.BATCH_SIZE, 3))
@@ -237,7 +237,7 @@ class ChunkParser:
         # print(new_x.shape)
         # print(new_y.shape)
 
-        return (planes, probs, winner, q, probs_modified)
+        return (planes, probs, winner, q)
 
 
     def convert_v4_to_tuple(self, content):

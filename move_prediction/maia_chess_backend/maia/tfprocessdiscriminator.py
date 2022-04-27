@@ -379,11 +379,28 @@ class TFProcessDiscriminator:
         return [w.read_value() for w in self.model.weights]
 
     #@tf.function()
-    def process_inner_loop(self, x, y, z, q, yy):
+    def process_inner_loop(self, x, y, z, q):
         with tf.GradientTape() as tape:
+            # print('hello')
             # pdb.set_trace()
-            policy, value = self.model((x, y), training=True)
-            policy_loss = self.policy_loss_fn(yy, policy)
+            # x = tf.math.round(tf.random.uniform((ChunkParser.BATCH_SIZE,),0,1))
+            # probs_modified = tf.stack([x, tf.ones(ChunkParser.BATCH_SIZE) - x], axis = 1)
+            labels_human = tf.tile(tf.constant([[0, 1]]), [x.shape[0], 1])
+            labels_nonhuman = tf.tile(tf.constant([[1, 0]]), [x.shape[0], 1])
+
+            non_human_move = self.gen_model(x, training=False)[0]
+            non_human_move = tf.one_hot(tf.cast(tf.math.argmax(non_human_move, axis=1), tf.int32), y.shape[1], dtype=tf.float16)
+            # TODO: convert into zeros or ones
+            # pdb.set_trace()
+
+            human_policy, value = self.model((x, y), training=True)
+            human_policy_loss = self.policy_loss_fn(labels_human, human_policy)
+
+            nonhuman_policy, value2 = self.model((x, non_human_move), training=True)
+            nonhuman_policy_loss = self.policy_loss_fn(labels_nonhuman, nonhuman_policy)
+
+            policy_loss = human_policy_loss + nonhuman_policy_loss
+
             reg_term = sum(self.model.losses)
             if self.wdl:
                 value_loss = self.value_loss_fn(self.qMix(z, q), value)
@@ -414,8 +431,10 @@ class TFProcessDiscriminator:
 
         # Run test before first step to see delta since end of last run.
         if steps % self.cfg['training']['total_steps'] == 0:
+        # if False:
             # Steps is given as one higher than current in order to avoid it
             # being equal to the value the end of a run is stored against.
+
             self.calculate_test_summaries_v2(test_batches, steps + 1)
             if self.swa_enabled:
                 self.calculate_swa_summaries_v2(test_batches, steps + 1)
@@ -444,13 +463,14 @@ class TFProcessDiscriminator:
         # Run training for this batch
         grads = None
         counter = 0
+        # print('453 here')
         for _ in range(batch_splits):
             counter += 1
-            x, y, z, q, yy = next(self.train_iter)
+            x, y, z, q = next(self.train_iter)
             # pdb.set_trace()
             # Commentted this line. Not sure what this was for.
             # y = tf.constant(np.random.rand(1024, 2), dtype = np.float32)
-            policy_loss, value_loss, mse_loss, reg_term, new_grads = self.process_inner_loop(x, y, z, q, yy)
+            policy_loss, value_loss, mse_loss, reg_term, new_grads = self.process_inner_loop(x, y, z, q)
 
             if not grads:
                 grads = new_grads
@@ -562,13 +582,31 @@ class TFProcessDiscriminator:
             w.assign(old)
 
     #@tf.function()
-    def calculate_test_summaries_inner_loop(self, x, y, z, q, yy):
-        pdb.set_trace()
-        policy, value = self.model((x, y), training=False)
-        policy_loss = self.policy_loss_fn(yy, policy)
-        print("policy loss fn finished")
-        # FIX ME
-        policy_accuracy = self.policy_accuracy_fn(yy, policy)
+    def calculate_test_summaries_inner_loop(self, x, y, z, q):
+        # pdb.set_trace()
+
+        labels_human = tf.tile(tf.constant([[0, 1]]), [x.shape[0], 1])
+        labels_nonhuman = tf.tile(tf.constant([[1, 0]]), [x.shape[0], 1])
+
+        non_human_move = self.gen_model(x, training=False)[0]
+        # non_human_move = tf.math.argmax(non_human_move[0], axis=1)
+        # TODO: convert into zeros or ones
+        non_human_move = tf.one_hot(tf.cast(tf.math.argmax(non_human_move, axis=1), tf.int32), y.shape[1], dtype=tf.float16)
+        # pdb.set_trace()
+
+        human_policy, value = self.model((x, y), training=True)
+        human_policy_accuracy = self.policy_accuracy_fn(labels_human, human_policy)
+        human_policy_loss = self.policy_loss_fn(labels_human, human_policy)
+
+        nonhuman_policy, value2 = self.model((x, non_human_move), training=True)
+        nonhuman_policy_accuracy = self.policy_accuracy_fn(labels_nonhuman, nonhuman_policy)
+        nonhuman_policy_loss = self.policy_loss_fn(labels_nonhuman, nonhuman_policy)
+
+        policy_loss = human_policy_loss + nonhuman_policy_loss
+
+        policy_accuracy = (human_policy_accuracy + nonhuman_policy_accuracy) / 2
+
+
         #policy_accuracy = 0.0
         # pari: no idea what qMix does
         if self.wdl:
@@ -594,10 +632,10 @@ class TFProcessDiscriminator:
         sum_policy = 0
         sum_value = 0
         for i in range(0, test_batches):
-            x, y, z, q, yy = next(self.test_iter)
+            x, y, z, q = next(self.test_iter)
             print("test summaries done")
             # print("Counter: " + str(i))
-            policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy = self.calculate_test_summaries_inner_loop(x, y, z, q, yy)
+            policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy = self.calculate_test_summaries_inner_loop(x, y, z, q)
             # pdb.set_trace()
             sum_policy_accuracy += policy_accuracy
             sum_mse += mse_loss
@@ -782,6 +820,7 @@ class TFProcessDiscriminator:
         return tf.keras.layers.Activation('relu')(self.batch_norm_v2(conv, scale=bn_scale))
 
     def residual_block_v2(self, inputs, channels):
+        # As shown in figure 10 of the maia paper: conv2d + relu -> conv2d -> fully connected block -> relu
         conv1 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format='channels_first')(inputs)
         out1 = tf.keras.layers.Activation('relu')(self.batch_norm_v2(conv1, scale=False))
         conv2 = tf.keras.layers.Conv2D(channels, 3, use_bias=False, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, data_format='channels_first')(out1)
@@ -804,12 +843,12 @@ class TFProcessDiscriminator:
             conv_pol2_flat = tf.reshape(conv_pol2, [-1, 80*8*8])
             # print(conv_pol2_flat.shape)
             final_flat = tf.concat([conv_pol2_flat, move], axis=1)
-            pdb.set_trace()
+            # pdb.set_trace()
 
             # print(conv_pol2_flat.shape)
             # print('hey hey')
             # h_fc1 = ApplyPolicyMapDiscriminator()(conv_pol2)
-            # print(h_fc1.shape)
+            # print(h_fc1.shape) 
             h_fc1 = tf.keras.layers.Dense(2, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(final_flat)
             # print(h_fc1.shape)
         elif self.POLICY_HEAD == NetworkFormat.POLICY_CLASSICAL:
