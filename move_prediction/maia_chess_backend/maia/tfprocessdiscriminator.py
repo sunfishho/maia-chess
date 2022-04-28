@@ -364,7 +364,7 @@ class TFProcessDiscriminator:
             print("Restoring from {0}".format(self.manager.latest_checkpoint))
             self.checkpoint.restore(self.manager.latest_checkpoint)
 
-    def process_loop_v2(self, batch_size, test_batches, batch_splits=1):
+    def process_loop_v2(self, batch_size, test_batches, train_batches, batch_splits=1):
         # Get the initial steps value in case this is a resume from a step count
         # which is not a multiple of total_steps.
         steps = self.global_step.read_value()
@@ -372,7 +372,7 @@ class TFProcessDiscriminator:
 
         total_steps = self.cfg['training']['total_steps']
         for _ in range(steps % total_steps, total_steps):
-            self.process_v2(batch_size, test_batches, batch_splits=batch_splits)
+            self.process_v2(batch_size, test_batches, train_batches, batch_splits=batch_splits)
 
     #@tf.function()
     def read_weights(self):
@@ -416,7 +416,7 @@ class TFProcessDiscriminator:
             value_loss = self.value_loss_fn(self.qMix(z, q), value)
         return policy_loss, value_loss, mse_loss, reg_term, tape.gradient(total_loss, self.model.trainable_weights)
 
-    def process_v2(self, batch_size, test_batches, batch_splits=1):
+    def process_v2(self, batch_size, test_batches, train_batches, batch_splits=1):
         if not self.time_start:
             self.time_start = time.time()
 
@@ -434,8 +434,8 @@ class TFProcessDiscriminator:
         # if False:
             # Steps is given as one higher than current in order to avoid it
             # being equal to the value the end of a run is stored against.
-
-            self.calculate_test_summaries_v2(test_batches, steps + 1)
+            self.calculate_summaries_v2(test_batches, steps + 1)
+            self.calculate_summaries_v2(train_batches, steps + 1, kind="Train")
             if self.swa_enabled:
                 self.calculate_swa_summaries_v2(test_batches, steps + 1)
 
@@ -531,11 +531,11 @@ class TFProcessDiscriminator:
             self.time_start = time_end
             self.last_steps = steps
 
-            wandb.log({"LR": self.lr , "step":steps})
-            wandb.log({"Reg term": avg_reg_term , "step":steps})
-            wandb.log({"Train Policy Loss": avg_policy_loss , "step":steps})
-            wandb.log({"Train Value Loss": avg_value_loss , "step":steps})
-            wandb.log({"Train MSE Loss": avg_mse_loss , "step":steps})
+            wandb.log({"Discriminator LR": self.lr , "step":steps})
+            wandb.log({"Discriminator Reg term": avg_reg_term , "step":steps})
+            wandb.log({"Avg Discriminator Train Policy Loss": avg_policy_loss , "step":steps})
+            # wandb.log({"Discriminator Train Value Loss": avg_value_loss , "step":steps})
+            # wandb.log({"Discriminator Train MSE Loss": avg_mse_loss , "step":steps})
 
             #wandb.log({"Policy Accuracy": sum_policy_accuracy , "step":steps})
             #wandb.log({"Value Accuracy": sum_value_accuracy , "step":steps})
@@ -548,7 +548,8 @@ class TFProcessDiscriminator:
         # Calculate test values every 'test_steps', but also ensure there is
         # one at the final step so the delta to the first step can be calculted.
         if steps % self.cfg['training']['test_steps'] == 0 or steps % self.cfg['training']['total_steps'] == 0:
-            self.calculate_test_summaries_v2(test_batches, steps)
+            self.calculate_summaries_v2(test_batches, steps)
+            self.calculate_summaries_v2(train_batches, steps + 1, kind="Train")
             if self.swa_enabled:
                 self.calculate_swa_summaries_v2(test_batches, steps)
 
@@ -576,7 +577,7 @@ class TFProcessDiscriminator:
             w.assign(swa.read_value())
         true_test_writer, self.test_writer = self.test_writer, self.swa_writer
         print('swa', end=' ')
-        self.calculate_test_summaries_v2(test_batches, steps)
+        self.calculate_summaries_v2(test_batches, steps)
         self.test_writer = true_test_writer
         for (old, w) in zip(backup, self.model.weights):
             w.assign(old)
@@ -624,16 +625,19 @@ class TFProcessDiscriminator:
 
         return policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy
 
-    def calculate_test_summaries_v2(self, test_batches, steps):
+    def calculate_summaries_v2(self, batches, steps, kind='Test'):
         start = time.time()
         sum_policy_accuracy = 0
         sum_value_accuracy = 0
         sum_mse = 0
         sum_policy = 0
         sum_value = 0
-        for i in range(0, test_batches):
-            x, y, z, q = next(self.test_iter)
-            print("test summaries done")
+        for i in range(0, batches):
+            if kind == 'Train':
+                x, y, z, q = next(self.train_iter)
+            elif kind == 'Test':
+                x, y, z, q = next(self.test_iter)
+            print(f"{kind} summaries done")
             # print("Counter: " + str(i))
             policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy = self.calculate_test_summaries_inner_loop(x, y, z, q)
             # pdb.set_trace()
@@ -643,15 +647,15 @@ class TFProcessDiscriminator:
             if self.wdl:
                 sum_value_accuracy += value_accuracy
                 sum_value += value_loss
-        sum_policy_accuracy /= test_batches
+        sum_policy_accuracy /= batches
         sum_policy_accuracy *= 100
-        sum_policy /= test_batches
-        sum_value /= test_batches
+        sum_policy /= batches
+        sum_value /= batches
         if self.wdl:
-            sum_value_accuracy /= test_batches
+            sum_value_accuracy /= batches
             sum_value_accuracy *= 100
         # Additionally rescale to [0, 1] so divide by 4
-        sum_mse /= (4.0 * test_batches)
+        sum_mse /= (4.0 * batches)
         self.net.pb.training_params.learning_rate = self.lr
         self.net.pb.training_params.mse_loss = sum_mse
         self.net.pb.training_params.policy_loss = sum_policy
@@ -671,11 +675,11 @@ class TFProcessDiscriminator:
         printWithDate("step {}, policy={:g} value={:g} policy accuracy={:g}% value accuracy={:g}% mse={:g}".\
             format(steps, sum_policy, sum_value, sum_policy_accuracy, sum_value_accuracy, sum_mse))
 
-        wandb.log({"Test Policy Loss": sum_policy , "step":steps})
-        wandb.log({"Test Value Loss": sum_value , "step":steps})
-        wandb.log({"Test MSE Loss": sum_mse , "step":steps})
-        wandb.log({"Test Policy Accuracy": sum_policy_accuracy , "step":steps})
-        wandb.log({"Test Value Accuracy": sum_value_accuracy , "step":steps})
+        wandb.log({f"Discriminator {kind} Policy Loss": sum_policy , "step":steps})
+        # wandb.log({"Test Value Loss": sum_value , "step":steps})
+        # wandb.log({"Test MSE Loss": sum_mse , "step":steps})
+        wandb.log({f"Discriminator {kind} Policy Accuracy": sum_policy_accuracy , "step":steps})
+        # wandb.log({"Test Value Accuracy": sum_value_accuracy , "step":steps})
 
         print("calculate summaries took: ", time.time()-start)
 

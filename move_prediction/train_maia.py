@@ -179,7 +179,14 @@ def main(config_path, name, collection_name):
     num_evals = max(1, num_evals // maia_chess_backend.maia.ChunkParser.BATCH_SIZE)
     print("Using {} evaluation batches".format(num_evals))
 
-    tfprocess_d.process_loop_v2(total_batch_size, num_evals, batch_splits=batch_splits)
+    num_evals_train = cfg['training'].get('num_train_positions', len(train_chunks) * 10)
+    num_evals_train = max(1, num_evals_train // maia_chess_backend.maia.ChunkParser.BATCH_SIZE)
+    print("Using {} evaluation batches for train".format(num_evals_train))
+
+    tfprocess_gen.process_loop_v2(total_batch_size, num_evals, num_evals_train, batch_splits=batch_splits)
+
+    tfprocess_d.process_loop_v2(total_batch_size, num_evals, num_evals_train, batch_splits=batch_splits)
+
 
     if cfg['training'].get('swa_output', False):
         tfprocess_d.save_swa_weights_v2(output_name)
