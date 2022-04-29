@@ -7,7 +7,7 @@ import glob
 import gzip
 import random
 import time
-#import multiprocessing
+import multiprocessing
 
 import tensorflow as tf
 import os
@@ -183,11 +183,10 @@ def main(config_path, name, collection_name):
     num_evals_train = max(1, num_evals_train // maia_chess_backend.maia.ChunkParser.BATCH_SIZE)
     print("Using {} evaluation batches for train".format(num_evals_train))
 
-    tfprocess_gen.process_loop_v2(total_batch_size, num_evals, num_evals_train, batch_splits=batch_splits)
-
-    tfprocess_d.process_loop_v2(total_batch_size, num_evals, num_evals_train, batch_splits=batch_splits)
-
-
+    num_iterations = 5
+    for _ in range(num_iterations):
+            tfprocess_gen.process_loop_v2(total_batch_size, num_evals, num_evals_train, batch_splits=batch_splits)
+            tfprocess_d.process_loop_v2(total_batch_size, num_evals, num_evals_train, batch_splits=batch_splits)
     if cfg['training'].get('swa_output', False):
         tfprocess_d.save_swa_weights_v2(output_name)
     else:
