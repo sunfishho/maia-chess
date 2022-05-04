@@ -392,6 +392,10 @@ class TFProcessDiscriminator:
             non_human_move = tf.one_hot(tf.cast(tf.math.argmax(non_human_move, axis=1), tf.int32), y.shape[1], dtype=tf.float16)
             # TODO: convert into zeros or ones
             # pdb.set_trace()
+            ynum = y.numpy()
+            indices = ynum == -1
+            ynum[indices] = 0
+            y = tf.convert_to_tensor(ynum)
 
             human_policy, value = self.model((x, y), training=True)
             human_policy_loss = self.policy_loss_fn(labels_human, human_policy)
@@ -430,8 +434,8 @@ class TFProcessDiscriminator:
             test_batches //= 2
 
         # Run test before first step to see delta since end of last run.
-        if steps % self.cfg['training']['total_steps'] == 0:
-        # if False:
+        # if steps % self.cfg['training']['total_steps'] == 0:
+        if False:
             # Steps is given as one higher than current in order to avoid it
             # being equal to the value the end of a run is stored against.
             self.calculate_summaries_v2(test_batches, steps + 1)
@@ -547,7 +551,8 @@ class TFProcessDiscriminator:
 
         # Calculate test values every 'test_steps', but also ensure there is
         # one at the final step so the delta to the first step can be calculted.
-        if steps % self.cfg['training']['test_steps'] == 0 or steps % self.cfg['training']['total_steps'] == 0:
+        # if steps % self.cfg['training']['test_steps'] == 0 or steps % self.cfg['training']['total_steps'] == 0:
+        if False:
             self.calculate_summaries_v2(test_batches, steps)
             self.calculate_summaries_v2(train_batches, steps + 1, kind="Train")
             if self.swa_enabled:

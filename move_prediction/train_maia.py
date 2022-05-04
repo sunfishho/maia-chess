@@ -185,8 +185,8 @@ def main(config_path, name, collection_name):
 
     num_iterations = 5
     for _ in range(num_iterations):
-            tfprocess_gen.process_loop_v2(total_batch_size, num_evals, num_evals_train, batch_splits=batch_splits)
-            tfprocess_d.process_loop_v2(total_batch_size, num_evals, num_evals_train, batch_splits=batch_splits)
+        tfprocess_d.process_loop_v2(total_batch_size, num_evals, num_evals_train, batch_splits=batch_splits)
+        tfprocess_gen.process_loop_v2(total_batch_size, num_evals, num_evals_train, batch_splits=batch_splits)
     if cfg['training'].get('swa_output', False):
         tfprocess_d.save_swa_weights_v2(output_name)
     else:
