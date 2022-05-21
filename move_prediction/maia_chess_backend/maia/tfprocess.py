@@ -125,13 +125,21 @@ class TFProcess:
             tf.keras.mixed_precision.experimental.set_policy('mixed_float16')
 
         self.global_step = tf.Variable(0, name='global_step', trainable=False, dtype=tf.int64)
-        print("set global set to 0")
 
-    def init_v2(self, train_dataset, test_dataset):
-        self.train_dataset = train_dataset
-        self.train_iter = iter(train_dataset)
-        self.test_dataset = test_dataset
-        self.test_iter = iter(test_dataset)
+    # def init_v2(self, train_dataset, test_dataset):
+        # self.train_dataset = train_dataset
+        # self.train_iter = iter(train_dataset)
+        # self.test_dataset = test_dataset
+        # self.test_iter = iter(test_dataset)
+        # self.init_net_v2()
+
+    def init_v2(self, train_iter, test_iter):
+        # self.train_dataset = train_dataset
+        # self.test_dataset = test_dataset
+        # self.train_iter = iter(train_dataset)
+        # self.test_iter = iter(test_dataset)
+        self.train_iter = train_iter
+        self.test_iter = test_iter
         self.init_net_v2()
 
     def init_net_v2(self):
@@ -338,10 +346,12 @@ class TFProcess:
                 if 'variance:' in weights.name and self.renorm_enabled:
                     offset-=1
             last_was_gamma = 'gamma:' in weights.name
+
         # Replace the SWA weights as well, ensuring swa accumulation is reset.
-        if self.swa_enabled:
-            self.swa_count.assign(tf.constant(0.))
-            self.update_swa_v2()
+        # if self.swa_enabled:
+            # self.swa_count.assign(tf.constant(0.))
+            # self.update_swa_v2()
+
         # This should result in identical file to the starting one
         # self.save_leelaz_weights_v2('restored.pb.gz')
 
@@ -354,7 +364,6 @@ class TFProcess:
         # Get the initial steps value in case this is a resume from a step count
         # which is not a multiple of total_steps.
         steps = self.global_step.read_value()
-        print("global step value at start: ", steps)
 
         total_steps = self.cfg['training']['total_steps']
         for _ in range(steps % total_steps, total_steps):
@@ -397,16 +406,6 @@ class TFProcess:
             # split half of test_batches between testing regular weights and SWA weights
             test_batches //= 2
 
-        # Run test before first step to see delta since end of last run.
-        if steps % self.cfg['training']['total_steps'] == 0:
-            # Steps is given as one higher than current in order to avoid it
-            # being equal to the value the end of a run is stored against.
-            self.calculate_summaries_v2(test_batches, steps + 1)
-            self.calculate_summaries_v2(train_batches, steps + 1, kind="Train")
-
-            if self.swa_enabled:
-                self.calculate_swa_summaries_v2(test_batches, steps + 1)
-
         # Make sure that ghost batch norm can be applied
         if batch_size % 64 != 0:
             # Adjust required batch size for batch splitting.
@@ -424,9 +423,8 @@ class TFProcess:
             self.lr = self.lr * tf.cast(steps + 1, tf.float32) / self.warmup_steps
 
         # need to add 1 to steps because steps will be incremented after gradient update
-        if (steps + 1) % self.cfg['training']['train_avg_report_steps'] == 0 or (steps + 1) % self.cfg['training']['total_steps'] == 0:
-            before_weights = self.read_weights()
-
+        # if (steps + 1) % self.cfg['training']['train_avg_report_steps'] == 0 or (steps + 1) % self.cfg['training']['total_steps'] == 0:
+            # before_weights = self.read_weights()
 
         # Run training for this batch
         grads = None
@@ -467,57 +465,29 @@ class TFProcess:
                 elapsed = time_end - self.time_start
                 steps_elapsed = steps - self.last_steps
                 speed = batch_size * (tf.cast(steps_elapsed, tf.float32) / elapsed)
+
             avg_policy_loss = np.mean(self.avg_policy_loss or [0])
-            avg_value_loss = np.mean(self.avg_value_loss or [0])
-            avg_mse_loss = np.mean(self.avg_mse_loss or [0])
             avg_reg_term = np.mean(self.avg_reg_term or [0])
-            printWithDate("step {}, lr={:g} policy={:g} value={:g} mse={:g} reg={:g} total={:g} ({:g} pos/s)".format(
-                steps, self.lr, avg_policy_loss, avg_value_loss, avg_mse_loss, avg_reg_term,
-                pol_loss_w * avg_policy_loss + val_loss_w * avg_value_loss + avg_reg_term,
+
+            printWithDate("D: step {}, lr={:g} policy={:g} ({:g} pos/s)".format(steps,
+                self.lr, avg_policy_loss,
                 speed))
 
-            after_weights = self.read_weights()
-            with self.train_writer.as_default():
-                tf.summary.scalar("Policy Loss", avg_policy_loss, step=steps)
-                tf.summary.scalar("Value Loss", avg_value_loss, step=steps)
-                tf.summary.scalar("Reg term", avg_reg_term, step=steps)
-                tf.summary.scalar("LR", self.lr, step=steps)
-                tf.summary.scalar("Gradient norm", grad_norm / batch_splits, step=steps)
-                tf.summary.scalar("MSE Loss", avg_mse_loss, step=steps)
-                self.compute_update_ratio_v2(
-                    before_weights, after_weights, steps)
-            self.train_writer.flush()
             self.time_start = time_end
             self.last_steps = steps
 
             wandb.log({"Generator LR": self.lr , "step":steps})
             wandb.log({"Generator Reg term": avg_reg_term , "step":steps})
             wandb.log({"Avg Generator Train Policy Loss": avg_policy_loss , "step":steps})
-            # wandb.log({"Train Policy Loss": avg_policy_loss , "step":steps})
-            # wandb.log({"Train Value Loss": avg_value_loss , "step":steps})
-            # wandb.log({"Train MSE Loss": avg_mse_loss , "step":steps})
 
-            #wandb.log({"Policy Accuracy": sum_policy_accuracy , "step":steps})
-            #wandb.log({"Value Accuracy": sum_value_accuracy , "step":steps})
+            self.avg_policy_loss = []
+            self.avg_reg_term = []
 
-            self.avg_policy_loss, self.avg_value_loss, self.avg_mse_loss, self.avg_reg_term = [], [], [], []
-
-        if self.swa_enabled and steps % self.cfg['training']['swa_steps'] == 0:
-            self.update_swa_v2()
-
-        # Calculate test values every 'test_steps', but also ensure there is
-        # one at the final step so the delta to the first step can be calculted.
-        if steps % self.cfg['training']['test_steps'] == 0 or steps % self.cfg['training']['total_steps'] == 0:
+        if steps % self.cfg['training']['test_steps'] == 0:
             self.calculate_summaries_v2(test_batches, steps)
-            self.calculate_summaries_v2(train_batches, steps + 1, kind="Train")
-            if self.swa_enabled:
-                self.calculate_swa_summaries_v2(test_batches, steps)
+            # self.calculate_summaries_v2(train_batches, steps, kind="Train")
+            self.calculate_summaries_v2(10, steps, kind="Train")
 
-        # Save session and weights at end, and also optionally every 'checkpoint_steps'.
-        #if steps % self.cfg['training']['total_steps'] == 0 or (
-        #        'checkpoint_steps' in self.cfg['training'] and steps % self.cfg['training']['checkpoint_steps'] == 0):
-
-        # pari: FIXME: don't want two consecutively trained models to be saved / interfered; reuse this code when we need to save models / and maybe use the wandb experiment name to save the models
         if False:
             self.manager.save()
             print("Model saved in file: {}".format(self.manager.latest_checkpoint))
@@ -566,12 +536,13 @@ class TFProcess:
         sum_mse = 0
         sum_policy = 0
         sum_value = 0
+
         for _ in range(0, batches):
             if kind == 'Train':
                 x, y, z, q = next(self.train_iter)
             elif kind == 'Test':
                 x, y, z, q = next(self.test_iter)
-            print(f"{kind} summaries done")
+
             policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy = self.calculate_test_summaries_inner_loop(x, y, z, q)
             sum_policy_accuracy += policy_accuracy
             sum_mse += mse_loss
@@ -593,25 +564,9 @@ class TFProcess:
         self.net.pb.training_params.policy_loss = sum_policy
         # TODO store value and value accuracy in pb
         self.net.pb.training_params.accuracy = sum_policy_accuracy
-        with self.test_writer.as_default():
-            tf.summary.scalar("Policy Loss", sum_policy, step=steps)
-            tf.summary.scalar("Value Loss", sum_value, step=steps)
-            tf.summary.scalar("MSE Loss", sum_mse, step=steps)
-            tf.summary.scalar("Policy Accuracy", sum_policy_accuracy, step=steps)
-            if self.wdl:
-                tf.summary.scalar("Value Accuracy", sum_value_accuracy, step=steps)
-            for w in self.model.weights:
-                tf.summary.histogram(w.name, w, buckets=1000, step=steps)
-        self.test_writer.flush()
 
-        printWithDate("step {}, policy={:g} value={:g} policy accuracy={:g}% value accuracy={:g}% mse={:g}".\
-            format(steps, sum_policy, sum_value, sum_policy_accuracy, sum_value_accuracy, sum_mse))
-
-        # wandb.log({"Test Policy Loss": sum_policy , "step":steps})
-        # wandb.log({"Test Value Loss": sum_value , "step":steps})
-        # wandb.log({"Test MSE Loss": sum_mse , "step":steps})
-        # wandb.log({"Test Policy Accuracy": sum_policy_accuracy , "step":steps})
-        # wandb.log({"Test Value Accuracy": sum_value_accuracy , "step":steps})
+        printWithDate("G, {}: step {}, policy={:g} policy accuracy={:g}%".\
+            format(kind, steps, sum_policy, sum_policy_accuracy))
 
         wandb.log({f"Generator {kind} Policy Loss": sum_policy , "step":steps})
         wandb.log({f"Generator {kind} Policy Accuracy": sum_policy_accuracy , "step":steps})
@@ -775,7 +730,10 @@ class TFProcess:
         elif self.POLICY_HEAD == NetworkFormat.POLICY_CLASSICAL:
             conv_pol = self.conv_block_v2(flow, filter_size=1, output_channels=self.policy_channels)
             h_conv_pol_flat = tf.keras.layers.Flatten()(conv_pol)
-            h_fc1 = tf.keras.layers.Dense(1858, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(h_conv_pol_flat)
+            h_fc1 = tf.keras.layers.Dense(1858,
+                    kernel_initializer='glorot_normal',
+                    kernel_regularizer=self.l2reg,
+                    bias_regularizer=self.l2reg)(h_conv_pol_flat)
         else:
             raise ValueError(
                 "Unknown policy head type {}".format(self.POLICY_HEAD))

@@ -18,6 +18,7 @@
 
 import random
 import unittest
+import pdb
 
 class ShuffleBuffer:
     def __init__(self, elem_size, elem_count):
@@ -60,6 +61,10 @@ class ShuffleBuffer:
             If the buffer is not yet full, returns None
         """
         assert len(item) == self.elem_size, len(item)
+        # if len(item) != self.elem_size:
+            # print("BAD item in insert or replace")
+            # return None
+
         # putting the new item in a random location, and appending
         # the displaced item to the end of the buffer achieves a full
         # random shuffle (Fisher-Yates)
@@ -77,8 +82,8 @@ class ShuffleBuffer:
             self.used += 1
             return None
         return item
-        
- 
+
+
 class ShuffleBufferTest(unittest.TestCase):
     def test_extract(self):
         sb = ShuffleBuffer(3, 1)

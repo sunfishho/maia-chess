@@ -7,11 +7,13 @@ import glob
 import gzip
 import random
 import time
+
 import multiprocessing
 
-import tensorflow as tf
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'  # or any {'0', '1', '2'}
+#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'  # or any {'0', '1', '2'}
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import tensorflow as tf
 
 import maia_chess_backend
 import maia_chess_backend.maia
@@ -22,46 +24,7 @@ import pdb
 logger = logging.getLogger("wandb")
 logger.setLevel(logging.ERROR)
 
-
-import numpy as np
-from maia_chess_backend.maia.policy_index import policy_index
-from maia_chess_backend.maia.lc0_az_policy_map import *
-
-SKIP = 64
-
-# #New function for mapping policy index to squares
-def policy_index_to_squares (index):
-    move = policy_index[index]
-    start = np.zeros(64)
-    end = np.zeros(64)
-    promotion = np.zeros(64) #TODO
-
-    start_square = position_to_index(move[0:2])  #Format: a1 -> (0, 0), h8 -> (7, 7), (col, row)
-    end_square = position_to_index(move[2:])
-    start_col = start_square[0]
-    start_row = start_square[1]
-    end_col = end_square[0]
-    end_row = end_square[1]
-
-    start[start_col + 8*start_row] = 1
-    end[end_col + 8*end_row] = 1
-
-    return (start, end, promotion)
-
-def gen_discriminator_data(x, y):
-    final_x = np.zeros((1024, 115, 64))
-    y = y.numpy()
-    # line below is the limiting factor time-wise
-    final_x[:, 0:112, :] = x.numpy()
-    arg_max_y = np.argmax(y, axis=1)
-    concats = []
-    for i, arg in enumerate(arg_max_y):
-        if i > 2: break
-        start, end, promotion = policy_index_to_squares(arg)
-        concats.append(np.stack([start, end, promotion]))
-    concats = np.stack(concats)
-    final_x[:, 112:115, :] = concats
-    return (final_x, y)
+SKIP = 32
 
 #@maia_chess_backend.logged_main
 def main(config_path, name, collection_name):
@@ -108,67 +71,38 @@ def main(config_path, name, collection_name):
     tfprocess_d = maia_chess_backend.maia.TFProcessDiscriminator(cfg, name, collection_name)
     tfprocess_gen = maia_chess_backend.maia.TFProcess(cfg, name, collection_name)
 
-    if experimental_parser:
-        assert False
-        train_dataset = tf.data.Dataset.from_tensor_slices(train_chunks).shuffle(len(train_chunks)).repeat()\
-                         .interleave(lambda x: tf.data.FixedLengthRecordDataset(x, 8292, compression_type='GZIP', num_parallel_reads=1).filter(sample), num_parallel_calls=tf.data.experimental.AUTOTUNE)\
-                         .shuffle(shuffle_size)\
-                         .batch(split_batch_size).map(extract_inputs_outputs).prefetch(4)
-    else:
-        train_parser = maia_chess_backend.maia.ChunkParser(FileDataSrc(train_chunks.copy()),
-                shuffle_size=shuffle_size, sample=SKIP,
-                batch_size=maia_chess_backend.maia.ChunkParser.BATCH_SIZE,
-                workers=1)
-        train_dataset = tf.data.Dataset.from_generator(
-            train_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
-        train_dataset = train_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function)
-        train_dataset = train_dataset.prefetch(4)
-
     shuffle_size = int(shuffle_size)
+    train_parser = maia_chess_backend.maia.ChunkParser(FileDataSrc(train_chunks.copy()),
+            shuffle_size=shuffle_size, sample=SKIP,
+            batch_size=maia_chess_backend.maia.ChunkParser.BATCH_SIZE,
+            workers=8)
+    train_dataset = tf.data.Dataset.from_generator(
+        train_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
+    train_dataset = train_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function)
+    train_dataset = train_dataset.prefetch(4)
 
-    if experimental_parser:
-        test_dataset = tf.data.Dataset.from_tensor_slices(test_chunks).shuffle(len(test_chunks)).repeat()\
-                         .interleave(lambda x: tf.data.FixedLengthRecordDataset(x, 8292, compression_type='GZIP', num_parallel_reads=1).filter(sample), num_parallel_calls=tf.data.experimental.AUTOTUNE)\
-                         .shuffle(shuffle_size)\
-                         .batch(split_batch_size).map(extract_inputs_outputs).prefetch(4)
-    else:
-        test_parser = maia_chess_backend.maia.ChunkParser(FileDataSrc(test_chunks),
-                shuffle_size=shuffle_size, sample=SKIP,
-                batch_size=maia_chess_backend.maia.ChunkParser.BATCH_SIZE,
-                workers=1)
-        test_dataset = tf.data.Dataset.from_generator(
-            test_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
-        # below must be changed to parse_function if it is not the discriminator being used
-        test_dataset = test_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function)
-        test_dataset = test_dataset.prefetch(4)
+    test_parser = maia_chess_backend.maia.ChunkParser(FileDataSrc(test_chunks),
+            shuffle_size=shuffle_size, sample=SKIP,
+            batch_size=maia_chess_backend.maia.ChunkParser.BATCH_SIZE,
+            workers=8)
+    test_dataset = tf.data.Dataset.from_generator(
+        test_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
+    # below must be changed to parse_function if it is not the discriminator being used
+    test_dataset = test_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function)
+    test_dataset = test_dataset.prefetch(4)
 
-    #pdb.set_trace()
-    # print('before iter')
-    # trainiter = iter(train_dataset)
-    # new_data = []
-    # for i in range(2):
-    #     data = next(trainiter)
-    #     x = data[0]
-    #     y = data[1]
-    #     new_x, new_y = gen_discriminator_data(x, y)
-    #     new_data.append((new_x, new_y))
-    #
-    # print('after loop')
-    #
-    # discriminator_dataset = tf.data.Dataset.from_tensors(new_data)
-    # pdb.set_trace()
+    train_iter = iter(train_dataset)
+    test_iter = iter(test_dataset)
 
-    tfprocess_d.init_v2(train_dataset, test_dataset)
+    # tfprocess_d.init_v2(train_dataset, test_dataset)
+    tfprocess_d.init_v2(train_iter, test_iter)
     tfprocess_d.restore_v2()
 
-    tfprocess_gen.init_v2(train_dataset, test_dataset)
+    # tfprocess_gen.init_v2(train_dataset, test_dataset)
+    tfprocess_gen.init_v2(train_iter, test_iter)
     tfprocess_gen.restore_v2()
 
     tfprocess_d.gen_model = tfprocess_gen.model
-
-    # pari: what is the "the 10 samples per test game" mentioned in the
-    # comment below? how are these sampled -- aren't we looping through all
-    # test positions?
 
     # If number of test positions is not given
     # sweeps through all test chunks statistically
@@ -183,14 +117,21 @@ def main(config_path, name, collection_name):
     num_evals_train = max(1, num_evals_train // maia_chess_backend.maia.ChunkParser.BATCH_SIZE)
     print("Using {} evaluation batches for train".format(num_evals_train))
 
-    num_iterations = 5
+    num_iterations = 1000
+    numd_iterations = 10
+
     for _ in range(num_iterations):
-        tfprocess_d.process_loop_v2(total_batch_size, num_evals, num_evals_train, batch_splits=batch_splits)
-        tfprocess_gen.process_loop_v2(total_batch_size, num_evals, num_evals_train, batch_splits=batch_splits)
-    if cfg['training'].get('swa_output', False):
-        tfprocess_d.save_swa_weights_v2(output_name)
-    else:
-        tfprocess_d.save_leelaz_weights_v2(output_name)
+        for _ in range(numd_iterations):
+            tfprocess_d.process_loop_v2(total_batch_size, num_evals, num_evals_train,
+                    batch_splits=batch_splits)
+
+        tfprocess_gen.process_loop_v2(total_batch_size, num_evals, num_evals_train,
+                batch_splits=batch_splits)
+
+    # if cfg['training'].get('swa_output', False):
+        # tfprocess_d.save_swa_weights_v2(output_name)
+    # else:
+        # tfprocess_d.save_leelaz_weights_v2(output_name)
 
     train_parser.shutdown()
     test_parser.shutdown()

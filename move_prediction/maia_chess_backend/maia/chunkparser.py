@@ -200,46 +200,6 @@ class ChunkParser:
 
         return (planes, probs, winner, q)
 
-    @staticmethod
-    def parse_function_discriminator(planes, probs, winner, q):
-        """
-        Convert unpacked record batches to tensors for tensorflow training
-        """
-        planes = tf.io.decode_raw(planes, tf.float32)
-        probs = tf.io.decode_raw(probs, tf.float32)
-        winner = tf.io.decode_raw(winner, tf.float32)
-        q = tf.io.decode_raw(q, tf.float32)
-
-        planes = tf.reshape(planes, (ChunkParser.BATCH_SIZE, 112, 8*8))
-        # print(planes.shape)
-        # planes = tf.concat([planes, planes], axis=0)
-        # print(planes.shape)
-
-        probs = tf.reshape(probs, (ChunkParser.BATCH_SIZE, 1858))
-        # probs = tf.concat([probs, probs], axis=0)
-
-        #TODO: convert these to numpy
-        #start, end, promotion = policy_index_to_squares(5)
-        #pdb.set_trace()
-
-        # x = tf.math.round(tf.random.uniform((ChunkParser.BATCH_SIZE,),0,1))
-        # probs_modified = tf.stack([x, tf.ones(ChunkParser.BATCH_SIZE) - x], axis = 1)
-        # probs_modified = tf.concat([probs_modified, probs_modified], axis=0)
-
-        winner = tf.reshape(winner, (ChunkParser.BATCH_SIZE, 3))
-        # winner = tf.concat([winner, winner], axis=0)
-
-        q = tf.reshape(q, (ChunkParser.BATCH_SIZE, 3))
-        # q = tf.concat([q, q], axis=0)
-
-        # new_x, new_y = gen_discriminator_data(planes, probs)
-        # print('new')
-        # print(new_x.shape)
-        # print(new_y.shape)
-
-        return (planes, probs, winner, q)
-
-
     def convert_v4_to_tuple(self, content):
         """
         Unpack a v4 binary record to 4-tuple (state, policy pi, result, q)
@@ -304,6 +264,7 @@ class ChunkParser:
         elif version == V3_VERSION:
             record_size = self.v3_struct.size
         else:
+            assert False
             return
 
         for i in range(0, len(chunkdata), record_size):
@@ -315,6 +276,7 @@ class ChunkParser:
             if version == V3_VERSION:
                 # add 16 bytes of fake root_q, best_q, root_d, best_d to match V4 format
                 record += 16 * b'\x00'
+
             yield record
 
 
@@ -336,7 +298,9 @@ class ChunkParser:
                 try:
                     writer.send_bytes(item)
                 except KeyboardInterrupt:
-                    return
+                    print("going to exit in chunkparser")
+                    exit(-1)
+                    # return
 
 
     def v4_gen(self):
