@@ -3,33 +3,55 @@
 gpu: 0
 
 dataset:
-  input_train: '/home/gridsan/pnegi/maia-chess/1100traindata/training/*/*' # This uses glob so training/*/* is probably the end
-  input_test: '/home/gridsan/pnegi/maia-chess/1100traindata/validation/*/*' # This uses glob so validate/*/* is probably the end
+  input_train: '/home/gridsan/pnegi/maia-chess/1100traindata/training/*/*'
+  input_test: '/home/gridsan/pnegi/maia-chess/1100traindata/validation/*/*'
+common:
+  train_cycles: 100 #1 cycle = disc + gen run for total_steps_per_cyckle
+  batch_size: 1024
+  num_batch_splits: 1
+  shuffle_size: 250000
 
-training:
-    precision: 'half'
-    #batch_size: 4096
-    batch_size: 1024
-    num_batch_splits: 1
-    test_steps: 50
-    train_avg_report_steps: 50
+gen_training:
+  precision: 'half'
+  test_steps: 50
+  train_avg_report_steps: 50
+  total_steps_per_cycle: 1000
+  checkpoint_steps: 10000
+  lr_values:
+      - 0.01
+      - 0.001
+      - 0.0001
+  lr_boundaries:
+      - 500
+      - 2000
+  policy_loss_weight: 1.0            # weight of policy loss
+  value_loss_weight:  0.0            # weight of value loss
 
-    total_steps: 100
-    checkpoint_steps: 10000
-    shuffle_size: 250000
-    lr_values:
-        - 0.01
-        - 0.001
-        - 0.0001
-    lr_boundaries:
-        - 80000
-        - 200000
-        - 360000
-    policy_loss_weight: 1.0            # weight of policy loss
-    value_loss_weight:  0.0            # weight of value loss
-
-model:
+gen_model:
   filters: 64
   residual_blocks: 6
   se_ratio: 8
+
+disc_training:
+  precision: 'half'
+  test_steps: 50
+  train_avg_report_steps: 50
+
+  total_steps_per_cycle: 10000
+  checkpoint_steps: 10000
+  lr_values:
+      - 0.01
+      - 0.001
+      - 0.0001
+  lr_boundaries:
+      - 2000
+      - 10000
+  policy_loss_weight: 1.0            # weight of policy loss
+  value_loss_weight:  0.0            # weight of value loss
+disc_model:
+  filters: 64
+  residual_blocks: 6
+  se_ratio: 8
+  final_flat_blocks: 2
+  final_flat_hls: 2048
 ...

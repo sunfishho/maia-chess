@@ -63,12 +63,12 @@ class TFProcess:
         self.root_dir = os.path.join('models', self.collection_name, self.name)
 
         # Network structure
-        self.RESIDUAL_FILTERS = self.cfg['model']['filters']
-        self.RESIDUAL_BLOCKS = self.cfg['model']['residual_blocks']
-        self.SE_ratio = self.cfg['model']['se_ratio']
-        self.policy_channels = self.cfg['model'].get('policy_channels', 32)
-        precision = self.cfg['training'].get('precision', 'single')
-        loss_scale = self.cfg['training'].get('loss_scale', 128)
+        self.RESIDUAL_FILTERS = self.cfg['gen_model']['filters']
+        self.RESIDUAL_BLOCKS = self.cfg['gen_model']['residual_blocks']
+        self.SE_ratio = self.cfg['gen_model']['se_ratio']
+        self.policy_channels = self.cfg['gen_model'].get('policy_channels', 32)
+        precision = self.cfg['gen_training'].get('precision', 'single')
+        loss_scale = self.cfg['gen_training'].get('loss_scale', 128)
 
         if precision == 'single':
             self.model_dtype = tf.float32
@@ -80,8 +80,8 @@ class TFProcess:
         # Scale the loss to prevent gradient underflow
         self.loss_scale = 1 if self.model_dtype == tf.float32 else loss_scale
 
-        policy_head = self.cfg['model'].get('policy', 'convolution')
-        value_head  = self.cfg['model'].get('value', 'wdl')
+        policy_head = self.cfg['gen_model'].get('policy', 'convolution')
+        value_head  = self.cfg['gen_model'].get('value', 'wdl')
 
         self.POLICY_HEAD = None
         self.VALUE_HEAD = None
@@ -108,15 +108,15 @@ class TFProcess:
 
         self.net.set_valueformat(self.VALUE_HEAD)
 
-        self.swa_enabled = self.cfg['training'].get('swa', False)
+        self.swa_enabled = self.cfg['gen_training'].get('swa', False)
 
         # Limit momentum of SWA exponential average to 1 - 1/(swa_max_n + 1)
-        self.swa_max_n = self.cfg['training'].get('swa_max_n', 0)
+        self.swa_max_n = self.cfg['gen_training'].get('swa_max_n', 0)
 
-        self.renorm_enabled = self.cfg['training'].get('renorm', False)
-        self.renorm_max_r = self.cfg['training'].get('renorm_max_r', 1)
-        self.renorm_max_d = self.cfg['training'].get('renorm_max_d', 0)
-        self.renorm_momentum = self.cfg['training'].get('renorm_momentum', 0.99)
+        self.renorm_enabled = self.cfg['gen_training'].get('renorm', False)
+        self.renorm_max_r = self.cfg['gen_training'].get('renorm_max_r', 1)
+        self.renorm_max_d = self.cfg['gen_training'].get('renorm_max_d', 0)
+        self.renorm_momentum = self.cfg['gen_training'].get('renorm_momentum', 0.99)
 
         gpus = tf.config.experimental.list_physical_devices('GPU')
         tf.config.experimental.set_visible_devices(gpus[self.cfg['gpu']], 'GPU')
@@ -126,18 +126,7 @@ class TFProcess:
 
         self.global_step = tf.Variable(0, name='global_step', trainable=False, dtype=tf.int64)
 
-    # def init_v2(self, train_dataset, test_dataset):
-        # self.train_dataset = train_dataset
-        # self.train_iter = iter(train_dataset)
-        # self.test_dataset = test_dataset
-        # self.test_iter = iter(test_dataset)
-        # self.init_net_v2()
-
     def init_v2(self, train_iter, test_iter):
-        # self.train_dataset = train_dataset
-        # self.test_dataset = test_dataset
-        # self.train_iter = iter(train_dataset)
-        # self.test_iter = iter(test_dataset)
         self.train_iter = train_iter
         self.test_iter = test_iter
         self.init_net_v2()
@@ -163,7 +152,7 @@ class TFProcess:
         def correct_policy(target, output):
             output = tf.cast(output, tf.float32)
             # Calculate loss on policy head
-            if self.cfg['training'].get('mask_legal_moves'):
+            if self.cfg['gen_training'].get('mask_legal_moves'):
                 # extract mask for legal moves from target policy
                 move_is_legal = tf.greater_equal(target, 0)
                 # replace logits of illegal moves with large negative value (so that it doesn't affect policy of legal moves) without gradient
@@ -185,7 +174,7 @@ class TFProcess:
         self.policy_accuracy_fn = policy_accuracy
 
 
-        q_ratio = self.cfg['training'].get('q_ratio', 0)
+        q_ratio = self.cfg['gen_training'].get('q_ratio', 0)
         assert 0 <= q_ratio <= 1
 
         # Linear conversion to scalar to compute MSE with, for comparison to old values
@@ -217,8 +206,8 @@ class TFProcess:
                 return tf.reduce_mean(input_tensor=tf.math.squared_difference(scalar_target, output))
             self.mse_loss_fn = mse_loss
 
-        pol_loss_w = self.cfg['training']['policy_loss_weight']
-        val_loss_w = self.cfg['training']['value_loss_weight']
+        pol_loss_w = self.cfg['gen_training']['policy_loss_weight']
+        val_loss_w = self.cfg['gen_training']['value_loss_weight']
         self.lossMix = lambda policy, value: pol_loss_w * policy + val_loss_w * value
 
         def accuracy(target, output):
@@ -233,9 +222,9 @@ class TFProcess:
         self.time_start = None
         self.last_steps = None
         # Set adaptive learning rate during training
-        self.cfg['training']['lr_boundaries'].sort()
-        self.warmup_steps = self.cfg['training'].get('warmup_steps', 0)
-        self.lr = self.cfg['training']['lr_values'][0]
+        self.cfg['gen_training']['lr_boundaries'].sort()
+        self.warmup_steps = self.cfg['gen_training'].get('warmup_steps', 0)
+        self.lr = self.cfg['gen_training']['lr_values'][0]
         self.test_writer = tf.summary.create_file_writer(os.path.join(
                 'runs',
                 self.collection_name,
@@ -362,11 +351,11 @@ class TFProcess:
 
     def process_loop_v2(self, batch_size, test_batches, train_batches, batch_splits=1):
         # Get the initial steps value in case this is a resume from a step count
-        # which is not a multiple of total_steps.
+        # which is not a multiple of total_steps_per_cycle.
         steps = self.global_step.read_value()
 
-        total_steps = self.cfg['training']['total_steps']
-        for _ in range(steps % total_steps, total_steps):
+        total_steps_per_cycle = self.cfg['gen_training']['total_steps_per_cycle']
+        for _ in range(steps % total_steps_per_cycle, total_steps_per_cycle):
             self.process_v2(batch_size, test_batches, train_batches, batch_splits=batch_splits)
 
     @tf.function()
@@ -402,6 +391,11 @@ class TFProcess:
         if not self.last_steps:
             self.last_steps = steps
 
+        if steps % self.cfg['gen_training']['test_steps'] == 0:
+            self.calculate_summaries_v2(test_batches, steps)
+            # self.calculate_summaries_v2(train_batches, steps, kind="Train")
+            self.calculate_summaries_v2(10, steps, kind="Train")
+
         if self.swa_enabled:
             # split half of test_batches between testing regular weights and SWA weights
             test_batches //= 2
@@ -410,20 +404,20 @@ class TFProcess:
         if batch_size % 64 != 0:
             # Adjust required batch size for batch splitting.
             required_factor = 64 * \
-                self.cfg['training'].get('num_batch_splits', 1)
+                self.cfg['gen_training'].get('num_batch_splits', 1)
             raise ValueError(
                 'batch_size must be a multiple of {}'.format(required_factor))
 
         # Determine learning rate
-        lr_values = self.cfg['training']['lr_values']
-        lr_boundaries = self.cfg['training']['lr_boundaries']
-        steps_total = steps % self.cfg['training']['total_steps']
+        lr_values = self.cfg['gen_training']['lr_values']
+        lr_boundaries = self.cfg['gen_training']['lr_boundaries']
+        steps_total = steps % self.cfg['gen_training']['total_steps_per_cycle']
         self.lr = lr_values[bisect.bisect_right(lr_boundaries, steps_total)]
         if self.warmup_steps > 0 and steps < self.warmup_steps:
             self.lr = self.lr * tf.cast(steps + 1, tf.float32) / self.warmup_steps
 
         # need to add 1 to steps because steps will be incremented after gradient update
-        # if (steps + 1) % self.cfg['training']['train_avg_report_steps'] == 0 or (steps + 1) % self.cfg['training']['total_steps'] == 0:
+        # if (steps + 1) % self.cfg['gen_training']['train_avg_report_steps'] == 0 or (steps + 1) % self.cfg['gen_training']['total_steps_per_cycle'] == 0:
             # before_weights = self.read_weights()
 
         # Run training for this batch
@@ -448,7 +442,7 @@ class TFProcess:
         self.active_lr = self.lr / batch_splits
         if self.loss_scale != 1:
             grads = self.optimizer.get_unscaled_gradients(grads)
-        max_grad_norm = self.cfg['training'].get('max_grad_norm', 10000.0) * batch_splits
+        max_grad_norm = self.cfg['gen_training'].get('max_grad_norm', 10000.0) * batch_splits
         grads, grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
 
@@ -456,9 +450,9 @@ class TFProcess:
         self.global_step.assign_add(1)
         steps = self.global_step.read_value()
 
-        if steps % self.cfg['training']['train_avg_report_steps'] == 0 or steps % self.cfg['training']['total_steps'] == 0:
-            pol_loss_w = self.cfg['training']['policy_loss_weight']
-            val_loss_w = self.cfg['training']['value_loss_weight']
+        if steps % self.cfg['gen_training']['train_avg_report_steps'] == 0:
+            pol_loss_w = self.cfg['gen_training']['policy_loss_weight']
+            val_loss_w = self.cfg['gen_training']['value_loss_weight']
             time_end = time.time()
             speed = 0
             if self.time_start:
@@ -469,7 +463,7 @@ class TFProcess:
             avg_policy_loss = np.mean(self.avg_policy_loss or [0])
             avg_reg_term = np.mean(self.avg_reg_term or [0])
 
-            printWithDate("D: step {}, lr={:g} policy={:g} ({:g} pos/s)".format(steps,
+            printWithDate("G: step {}, lr={:g} policy={:g} ({:g} pos/s)".format(steps,
                 self.lr, avg_policy_loss,
                 speed))
 
@@ -482,11 +476,6 @@ class TFProcess:
 
             self.avg_policy_loss = []
             self.avg_reg_term = []
-
-        if steps % self.cfg['training']['test_steps'] == 0:
-            self.calculate_summaries_v2(test_batches, steps)
-            # self.calculate_summaries_v2(train_batches, steps, kind="Train")
-            self.calculate_summaries_v2(10, steps, kind="Train")
 
         if False:
             self.manager.save()

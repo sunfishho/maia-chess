@@ -72,12 +72,15 @@ class TFProcessDiscriminator:
         self.root_dir = os.path.join('models', self.collection_name, self.name)
 
         # Network structure
-        self.RESIDUAL_FILTERS = self.cfg['model']['filters']
-        self.RESIDUAL_BLOCKS = self.cfg['model']['residual_blocks']
-        self.SE_ratio = self.cfg['model']['se_ratio']
-        self.policy_channels = self.cfg['model'].get('policy_channels', 32)
-        precision = self.cfg['training'].get('precision', 'single')
-        loss_scale = self.cfg['training'].get('loss_scale', 128)
+        self.RESIDUAL_FILTERS = self.cfg['disc_model']['filters']
+        self.RESIDUAL_BLOCKS = self.cfg['disc_model']['residual_blocks']
+        self.SE_ratio = self.cfg['disc_model']['se_ratio']
+        self.FINAL_FLAT_BLOCKS = self.cfg['disc_model']['final_flat_blocks']
+        self.FINAL_FLAT_HLS = self.cfg['disc_model']['final_flat_hls']
+
+        self.policy_channels = self.cfg['disc_model'].get('policy_channels', 32)
+        precision = self.cfg['disc_training'].get('precision', 'single')
+        loss_scale = self.cfg['disc_training'].get('loss_scale', 128)
 
         if precision == 'single':
             self.model_dtype = tf.float32
@@ -89,8 +92,8 @@ class TFProcessDiscriminator:
         # Scale the loss to prevent gradient underflow
         self.loss_scale = 1 if self.model_dtype == tf.float32 else loss_scale
 
-        policy_head = self.cfg['model'].get('policy', 'convolution')
-        value_head  = self.cfg['model'].get('value', 'wdl')
+        policy_head = self.cfg['disc_model'].get('policy', 'convolution')
+        value_head  = self.cfg['disc_model'].get('value', 'wdl')
 
         self.POLICY_HEAD = None
         self.VALUE_HEAD = None
@@ -117,15 +120,15 @@ class TFProcessDiscriminator:
 
         self.net.set_valueformat(self.VALUE_HEAD)
 
-        self.swa_enabled = self.cfg['training'].get('swa', False)
+        self.swa_enabled = self.cfg['disc_training'].get('swa', False)
 
         # Limit momentum of SWA exponential average to 1 - 1/(swa_max_n + 1)
-        self.swa_max_n = self.cfg['training'].get('swa_max_n', 0)
+        self.swa_max_n = self.cfg['disc_training'].get('swa_max_n', 0)
 
-        self.renorm_enabled = self.cfg['training'].get('renorm', False)
-        self.renorm_max_r = self.cfg['training'].get('renorm_max_r', 1)
-        self.renorm_max_d = self.cfg['training'].get('renorm_max_d', 0)
-        self.renorm_momentum = self.cfg['training'].get('renorm_momentum', 0.99)
+        self.renorm_enabled = self.cfg['disc_training'].get('renorm', False)
+        self.renorm_max_r = self.cfg['disc_training'].get('renorm_max_r', 1)
+        self.renorm_max_d = self.cfg['disc_training'].get('renorm_max_d', 0)
+        self.renorm_momentum = self.cfg['disc_training'].get('renorm_momentum', 0.99)
 
         gpus = tf.config.experimental.list_physical_devices('GPU')
         tf.config.experimental.set_visible_devices(gpus[self.cfg['gpu']], 'GPU')
@@ -168,7 +171,7 @@ class TFProcessDiscriminator:
         def correct_policy(target, output):
             output = tf.cast(output, tf.float32)
             # Calculate loss on policy head
-            if self.cfg['training'].get('mask_legal_moves'):
+            if self.cfg['disc_training'].get('mask_legal_moves'):
                 # extract mask for legal moves from target policy
                 move_is_legal = tf.greater_equal(target, 0)
                 # replace logits of illegal moves with large negative value (so that it doesn't affect policy of legal moves) without gradient
@@ -194,7 +197,7 @@ class TFProcessDiscriminator:
         self.policy_accuracy_fn = policy_accuracy
 
 
-        q_ratio = self.cfg['training'].get('q_ratio', 0)
+        q_ratio = self.cfg['disc_training'].get('q_ratio', 0)
         assert 0 <= q_ratio <= 1
 
         # Linear conversion to scalar to compute MSE with, for comparison to old values
@@ -226,8 +229,8 @@ class TFProcessDiscriminator:
                 return tf.reduce_mean(input_tensor=tf.math.squared_difference(scalar_target, output))
             self.mse_loss_fn = mse_loss
 
-        pol_loss_w = self.cfg['training']['policy_loss_weight']
-        val_loss_w = self.cfg['training']['value_loss_weight']
+        pol_loss_w = self.cfg['disc_training']['policy_loss_weight']
+        val_loss_w = self.cfg['disc_training']['value_loss_weight']
         self.lossMix = lambda policy, value: pol_loss_w * policy + val_loss_w * value
 
         def accuracy(target, output):
@@ -242,9 +245,9 @@ class TFProcessDiscriminator:
         self.time_start = None
         self.last_steps = None
         # Set adaptive learning rate during training
-        self.cfg['training']['lr_boundaries'].sort()
-        self.warmup_steps = self.cfg['training'].get('warmup_steps', 0)
-        self.lr = self.cfg['training']['lr_values'][0]
+        self.cfg['disc_training']['lr_boundaries'].sort()
+        self.warmup_steps = self.cfg['disc_training'].get('warmup_steps', 0)
+        self.lr = self.cfg['disc_training']['lr_values'][0]
         self.test_writer = tf.summary.create_file_writer(os.path.join(
                 'runs',
                 self.collection_name,
@@ -369,11 +372,11 @@ class TFProcessDiscriminator:
 
     def process_loop_v2(self, batch_size, test_batches, train_batches, batch_splits=1):
         # Get the initial steps value in case this is a resume from a step count
-        # which is not a multiple of total_steps.
+        # which is not a multiple of total_steps_per_cycle.
         steps = self.global_step.read_value()
 
-        total_steps = self.cfg['training']['total_steps']
-        for _ in range(steps % total_steps, total_steps):
+        total_steps_per_cycle = self.cfg['disc_training']['total_steps_per_cycle']
+        for _ in range(steps % total_steps_per_cycle, total_steps_per_cycle):
             self.process_v2(batch_size, test_batches, train_batches,
                     batch_splits=batch_splits)
 
@@ -388,40 +391,28 @@ class TFProcessDiscriminator:
             labels_nonhuman = tf.tile(tf.constant([[1, 0]]), [x.shape[0], 1])
 
             non_human_move = self.gen_model(x, training=False)[0]
-            non_human_move = tf.one_hot(tf.cast(tf.math.argmax(non_human_move, axis=1), tf.int32), y.shape[1], dtype=tf.float16)
+            non_human_move = tf.one_hot(tf.cast(tf.math.argmax(non_human_move,
+                axis=1), tf.int32), y.shape[1], dtype=tf.float16)
 
             ynum = y.numpy()
             indices = ynum == -1
             ynum[indices] = 0
             y = tf.convert_to_tensor(ynum)
 
-            human_policy, value = self.model((x, y), training=True)
+            human_policy = self.model((x, y), training=True)
             human_policy_loss = self.policy_loss_fn(labels_human, human_policy)
 
-            nonhuman_policy, value2 = self.model((x, non_human_move), training=True)
+            nonhuman_policy  = self.model((x, non_human_move), training=True)
             nonhuman_policy_loss = self.policy_loss_fn(labels_nonhuman, nonhuman_policy)
 
             policy_loss = human_policy_loss + nonhuman_policy_loss
 
             reg_term = sum(self.model.losses)
-            # if self.wdl:
-                # value_loss = self.value_loss_fn(self.qMix(z, q), value)
-                # total_loss = self.lossMix(policy_loss, value_loss) + reg_term
-            # else:
-                # mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
-                # total_loss = self.lossMix(policy_loss, mse_loss) + reg_term
-            # if self.loss_scale != 1:
-                # total_loss = self.optimizer.get_scaled_loss(total_loss)
 
             ## simpler version
             value_loss = 0.0
             mse_loss = 0.0
             total_loss = policy_loss
-
-        # if self.wdl:
-            # mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
-        # else:
-            # value_loss = self.value_loss_fn(self.qMix(z, q), value)
 
         return policy_loss, value_loss, mse_loss, reg_term,\
                 tape.gradient(total_loss, self.model.trainable_weights)
@@ -429,11 +420,15 @@ class TFProcessDiscriminator:
     def process_v2(self, batch_size, test_batches, train_batches, batch_splits=1):
         if not self.time_start:
             self.time_start = time.time()
-
         # Get the initial steps value before we do a training step.
         steps = self.global_step.read_value()
         if not self.last_steps:
             self.last_steps = steps
+
+        if steps % self.cfg['disc_training']['test_steps'] == 0:
+            self.calculate_summaries_v2(test_batches, steps)
+            self.calculate_summaries_v2(10, steps, kind="Train")
+            # self.calculate_summaries_v2(train_batches, steps, kind="Train")
 
         if self.swa_enabled:
             # split half of test_batches between testing regular weights and SWA weights
@@ -443,14 +438,14 @@ class TFProcessDiscriminator:
         if batch_size % 64 != 0:
             # Adjust required batch size for batch splitting.
             required_factor = 64 * \
-                self.cfg['training'].get('num_batch_splits', 1)
+                self.cfg['disc_training'].get('num_batch_splits', 1)
             raise ValueError(
                 'batch_size must be a multiple of {}'.format(required_factor))
 
         # Determine learning rate
-        lr_values = self.cfg['training']['lr_values']
-        lr_boundaries = self.cfg['training']['lr_boundaries']
-        steps_total = steps % self.cfg['training']['total_steps']
+        lr_values = self.cfg['disc_training']['lr_values']
+        lr_boundaries = self.cfg['disc_training']['lr_boundaries']
+        steps_total = steps % self.cfg['disc_training']['total_steps_per_cycle']
         self.lr = lr_values[bisect.bisect_right(lr_boundaries, steps_total)]
         if self.warmup_steps > 0 and steps < self.warmup_steps:
             self.lr = self.lr * tf.cast(steps + 1, tf.float32) / self.warmup_steps
@@ -485,7 +480,7 @@ class TFProcessDiscriminator:
         self.active_lr = self.lr / batch_splits
         if self.loss_scale != 1:
             grads = self.optimizer.get_unscaled_gradients(grads)
-        max_grad_norm = self.cfg['training'].get('max_grad_norm', 10000.0) * batch_splits
+        max_grad_norm = self.cfg['disc_training'].get('max_grad_norm', 10000.0) * batch_splits
         grads, grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
 
@@ -493,9 +488,9 @@ class TFProcessDiscriminator:
         self.global_step.assign_add(1)
         steps = self.global_step.read_value()
 
-        if steps % self.cfg['training']['train_avg_report_steps'] == 0 or steps % self.cfg['training']['total_steps'] == 0:
-            pol_loss_w = self.cfg['training']['policy_loss_weight']
-            val_loss_w = self.cfg['training']['value_loss_weight']
+        if steps % self.cfg['disc_training']['train_avg_report_steps'] == 0:
+            pol_loss_w = self.cfg['disc_training']['policy_loss_weight']
+            val_loss_w = self.cfg['disc_training']['value_loss_weight']
             time_end = time.time()
             speed = 0
             if self.time_start:
@@ -519,14 +514,10 @@ class TFProcessDiscriminator:
             self.avg_policy_loss = []
             self.avg_reg_term = []
 
-        if self.swa_enabled and steps % self.cfg['training']['swa_steps'] == 0:
+        if self.swa_enabled and steps % self.cfg['disc_training']['swa_steps'] == 0:
             assert False
             self.update_swa_v2()
 
-        if steps % self.cfg['training']['test_steps'] == 0:
-            self.calculate_summaries_v2(test_batches, steps)
-            self.calculate_summaries_v2(10, steps, kind="Train")
-            # self.calculate_summaries_v2(train_batches, steps, kind="Train")
 
         if False:
             self.manager.save()
@@ -561,30 +552,20 @@ class TFProcessDiscriminator:
         non_human_move = self.gen_model(x, training=False)[0]
         # non_human_move = tf.math.argmax(non_human_move[0], axis=1)
         # TODO: convert into zeros or ones
-        non_human_move = tf.one_hot(tf.cast(tf.math.argmax(non_human_move, axis=1), tf.int32), y.shape[1], dtype=tf.float16)
-        # pdb.set_trace()
+        non_human_move = tf.one_hot(tf.cast(tf.math.argmax(non_human_move,
+            axis=1), tf.int32), y.shape[1], dtype=tf.float16)
 
-        human_policy, value = self.model((x, y), training=True)
+        human_policy = self.model((x, y), training=True)
         human_policy_accuracy = self.policy_accuracy_fn(labels_human, human_policy)
         human_policy_loss = self.policy_loss_fn(labels_human, human_policy)
 
-        nonhuman_policy, value2 = self.model((x, non_human_move), training=True)
+        nonhuman_policy = self.model((x, non_human_move), training=True)
         nonhuman_policy_accuracy = self.policy_accuracy_fn(labels_nonhuman, nonhuman_policy)
         nonhuman_policy_loss = self.policy_loss_fn(labels_nonhuman, nonhuman_policy)
 
         policy_loss = human_policy_loss + nonhuman_policy_loss
 
         policy_accuracy = (human_policy_accuracy + nonhuman_policy_accuracy) / 2
-
-        # pari: no idea what qMix does
-        if self.wdl:
-            value_loss = self.value_loss_fn(self.qMix(z, q), value)
-            mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
-            value_accuracy = self.accuracy_fn(self.qMix(z,q), value)
-        else:
-            value_loss = self.value_loss_fn(self.qMix(z, q), value)
-            mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
-            value_accuracy = tf.constant(0.)
 
         value_loss = 0.0
         mse_loss = 0.0
@@ -804,32 +785,29 @@ class TFProcessDiscriminator:
             conv_pol2_flat = tf.reshape(conv_pol2, [-1, 80*8*8])
             final_flat = tf.concat([conv_pol2_flat, move], axis=1)
 
-            h_fc1_hidden1 = tf.keras.layers.Dense(512,
-                    activation='relu',
-                    kernel_initializer='glorot_normal',
-                    kernel_regularizer=self.l2reg,
-                    bias_regularizer=self.l2reg)(final_flat)
-            h_fc1_hidden2 = tf.keras.layers.Dense(512,
-                    activation='relu',
-                    kernel_initializer='glorot_normal',
-                    kernel_regularizer=self.l2reg,
-                    bias_regularizer=self.l2reg)(h_fc1_hidden1)
+            for _ in range(0, self.FINAL_FLAT_BLOCKS):
+                final_flat = tf.keras.layers.Dense(self.FINAL_FLAT_HLS,
+                        activation='relu',
+                        kernel_initializer='glorot_normal',
+                        kernel_regularizer=self.l2reg,
+                        bias_regularizer=self.l2reg)(final_flat)
 
             h_fc1 = tf.keras.layers.Dense(2,
                     kernel_initializer='glorot_normal',
                     kernel_regularizer=self.l2reg,
-                    bias_regularizer=self.l2reg)(h_fc1_hidden2)
+                    bias_regularizer=self.l2reg)(final_flat)
 
         else:
             raise ValueError(
                 "Unknown policy head type {}".format(self.POLICY_HEAD))
 
         # Value head
-        conv_val = self.conv_block_v2(flow, filter_size=1, output_channels=32)
-        h_conv_val_flat = tf.keras.layers.Flatten()(conv_val)
-        h_fc2 = tf.keras.layers.Dense(128, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, activation='relu')(h_conv_val_flat)
-        if self.wdl:
-            h_fc3 = tf.keras.layers.Dense(3, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(h_fc2)
-        else:
-            h_fc3 = tf.keras.layers.Dense(1, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, activation='tanh')(h_fc2)
-        return h_fc1, h_fc3
+        # conv_val = self.conv_block_v2(flow, filter_size=1, output_channels=32)
+        # h_conv_val_flat = tf.keras.layers.Flatten()(conv_val)
+        # h_fc2 = tf.keras.layers.Dense(128, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, activation='relu')(h_conv_val_flat)
+        # if self.wdl:
+            # h_fc3 = tf.keras.layers.Dense(3, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(h_fc2)
+        # else:
+            # h_fc3 = tf.keras.layers.Dense(1, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, activation='tanh')(h_fc2)
+
+        return h_fc1

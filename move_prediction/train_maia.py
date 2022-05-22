@@ -11,7 +11,6 @@ import time
 import multiprocessing
 
 import os
-#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'  # or any {'0', '1', '2'}
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import tensorflow as tf
 
@@ -43,9 +42,10 @@ def main(config_path, name, collection_name):
     for k,v in cfg.items():
         if isinstance(v, dict):
             for k2,v2 in v.items():
-                wandbcfg.update({k2:v2})
+                wandbcfg.update({k+"-"+k2:v2})
         else:
             wandbcfg.update({k:v})
+
     wandb.init("maia-chess", config=wandbcfg)
     print(wandb.config)
 
@@ -54,11 +54,14 @@ def main(config_path, name, collection_name):
     train_chunks = get_latest_chunks(cfg['dataset']['input_train'])
     test_chunks = get_latest_chunks(cfg['dataset']['input_test'])
 
-    shuffle_size = cfg['training']['shuffle_size']
-    total_batch_size = cfg['training']['batch_size']
-    batch_splits = cfg['training'].get('num_batch_splits', 1)
+    # since we share the dataloader for both disc and gen, these are common
+    shuffle_size = cfg['common']['shuffle_size']
+    total_batch_size = cfg['common']['batch_size']
+    batch_splits = cfg['common'].get('num_batch_splits', 1)
+
     if total_batch_size % batch_splits != 0:
         raise ValueError('num_batch_splits must divide batch_size evenly')
+
     split_batch_size = total_batch_size // batch_splits
     # Load data with split batch size, which will be combined to the total batch size in tfprocess.
     maia_chess_backend.maia.ChunkParser.BATCH_SIZE = split_batch_size
@@ -75,7 +78,7 @@ def main(config_path, name, collection_name):
     train_parser = maia_chess_backend.maia.ChunkParser(FileDataSrc(train_chunks.copy()),
             shuffle_size=shuffle_size, sample=SKIP,
             batch_size=maia_chess_backend.maia.ChunkParser.BATCH_SIZE,
-            workers=8)
+            workers=78)
     train_dataset = tf.data.Dataset.from_generator(
         train_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
     train_dataset = train_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function)
@@ -84,10 +87,9 @@ def main(config_path, name, collection_name):
     test_parser = maia_chess_backend.maia.ChunkParser(FileDataSrc(test_chunks),
             shuffle_size=shuffle_size, sample=SKIP,
             batch_size=maia_chess_backend.maia.ChunkParser.BATCH_SIZE,
-            workers=8)
+            workers=78)
     test_dataset = tf.data.Dataset.from_generator(
         test_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
-    # below must be changed to parse_function if it is not the discriminator being used
     test_dataset = test_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function)
     test_dataset = test_dataset.prefetch(4)
 
@@ -109,26 +111,25 @@ def main(config_path, name, collection_name):
     # Assumes average of 10 samples per test game.
     # For simplicity, testing can use the split batch size instead of total batch size.
     # This does not affect results, because test results are simple averages that are independent of batch size.
-    num_evals = cfg['training'].get('num_test_positions', len(test_chunks) * 10)
+    num_evals = cfg['common'].get('num_test_positions', len(test_chunks) * 10)
     num_evals = max(1, num_evals // maia_chess_backend.maia.ChunkParser.BATCH_SIZE)
     print("Using {} evaluation batches".format(num_evals))
 
-    num_evals_train = cfg['training'].get('num_train_positions', len(train_chunks) * 10)
+    num_evals_train = cfg['common'].get('num_train_positions', len(train_chunks) * 10)
     num_evals_train = max(1, num_evals_train // maia_chess_backend.maia.ChunkParser.BATCH_SIZE)
     print("Using {} evaluation batches for train".format(num_evals_train))
 
-    num_iterations = 1000
-    numd_iterations = 10
+    num_iterations = cfg['common'].get('train_cycles', 100)
 
     for _ in range(num_iterations):
-        for _ in range(numd_iterations):
-            tfprocess_d.process_loop_v2(total_batch_size, num_evals, num_evals_train,
-                    batch_splits=batch_splits)
+        tfprocess_d.process_loop_v2(total_batch_size, num_evals, num_evals_train,
+                batch_splits=batch_splits)
 
         tfprocess_gen.process_loop_v2(total_batch_size, num_evals, num_evals_train,
                 batch_splits=batch_splits)
 
-    # if cfg['training'].get('swa_output', False):
+    ## TODO: get unique names for this run + save the models w/ that name
+    # if cfg['gen_training'].get('swa_output', False):
         # tfprocess_d.save_swa_weights_v2(output_name)
     # else:
         # tfprocess_d.save_leelaz_weights_v2(output_name)
