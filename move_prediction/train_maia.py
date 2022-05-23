@@ -78,7 +78,7 @@ def main(config_path, name, collection_name):
     train_parser = maia_chess_backend.maia.ChunkParser(FileDataSrc(train_chunks.copy()),
             shuffle_size=shuffle_size, sample=SKIP,
             batch_size=maia_chess_backend.maia.ChunkParser.BATCH_SIZE,
-            workers=78)
+            workers=64)
     train_dataset = tf.data.Dataset.from_generator(
         train_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
     train_dataset = train_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function)
@@ -87,30 +87,30 @@ def main(config_path, name, collection_name):
     test_parser = maia_chess_backend.maia.ChunkParser(FileDataSrc(test_chunks),
             shuffle_size=shuffle_size, sample=SKIP,
             batch_size=maia_chess_backend.maia.ChunkParser.BATCH_SIZE,
-            workers=78)
-    test_dataset = tf.data.Dataset.from_generator(
-        test_parser.parse, output_types=(tf.string, tf.string, tf.string, tf.string))
+            workers=64)
+    test_dataset = tf.data.Dataset.from_generator( test_parser.parse,
+            output_types=(tf.string, tf.string, tf.string, tf.string))
     test_dataset = test_dataset.map(maia_chess_backend.maia.ChunkParser.parse_function)
     test_dataset = test_dataset.prefetch(4)
 
     train_iter = iter(train_dataset)
     test_iter = iter(test_dataset)
 
-    # tfprocess_d.init_v2(train_dataset, test_dataset)
     tfprocess_d.init_v2(train_iter, test_iter)
     tfprocess_d.restore_v2()
 
-    # tfprocess_gen.init_v2(train_dataset, test_dataset)
     tfprocess_gen.init_v2(train_iter, test_iter)
     tfprocess_gen.restore_v2()
 
     tfprocess_d.gen_model = tfprocess_gen.model
+    tfprocess_gen.d_model = tfprocess_d.model
 
     # If number of test positions is not given
     # sweeps through all test chunks statistically
     # Assumes average of 10 samples per test game.
-    # For simplicity, testing can use the split batch size instead of total batch size.
-    # This does not affect results, because test results are simple averages that are independent of batch size.
+    # For simplicity, testing can use the split batch size instead of total
+    # batch size.  This does not affect results, because test results are
+    # simple averages that are independent of batch size.
     num_evals = cfg['common'].get('num_test_positions', len(test_chunks) * 10)
     num_evals = max(1, num_evals // maia_chess_backend.maia.ChunkParser.BATCH_SIZE)
     print("Using {} evaluation batches".format(num_evals))
@@ -124,9 +124,9 @@ def main(config_path, name, collection_name):
     for _ in range(num_iterations):
         tfprocess_d.process_loop_v2(total_batch_size, num_evals, num_evals_train,
                 batch_splits=batch_splits)
-
         tfprocess_gen.process_loop_v2(total_batch_size, num_evals, num_evals_train,
                 batch_splits=batch_splits)
+
 
     ## TODO: get unique names for this run + save the models w/ that name
     # if cfg['gen_training'].get('swa_output', False):

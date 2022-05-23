@@ -144,10 +144,12 @@ class TFProcess:
             self.swa_weights = [tf.Variable(w, trainable=False) for w in self.model.weights]
 
         self.active_lr = 0.01
-        self.optimizer = tf.keras.optimizers.SGD(learning_rate=lambda: self.active_lr, momentum=0.9, nesterov=True)
+        self.optimizer = tf.keras.optimizers.SGD(learning_rate=lambda:
+                self.active_lr, momentum=0.9, nesterov=True)
         self.orig_optimizer = self.optimizer
         if self.loss_scale != 1:
-            self.optimizer = tf.keras.mixed_precision.experimental.LossScaleOptimizer(self.optimizer, self.loss_scale)
+            self.optimizer = tf.keras.mixed_precision.experimental.\
+                    LossScaleOptimizer(self.optimizer, self.loss_scale)
 
         def correct_policy(target, output):
             output = tf.cast(output, tf.float32)
@@ -155,7 +157,9 @@ class TFProcess:
             if self.cfg['gen_training'].get('mask_legal_moves'):
                 # extract mask for legal moves from target policy
                 move_is_legal = tf.greater_equal(target, 0)
-                # replace logits of illegal moves with large negative value (so that it doesn't affect policy of legal moves) without gradient
+                # replace logits of illegal moves with large negative value (so
+                # that it doesn't affect policy of legal moves) without
+                # gradient
                 illegal_filler = tf.zeros_like(output) - 1.0e10
                 output = tf.where(move_is_legal, output, illegal_filler)
             # y_ still has -1 on illegal moves, flush them to 0
@@ -358,29 +362,68 @@ class TFProcess:
         for _ in range(steps % total_steps_per_cycle, total_steps_per_cycle):
             self.process_v2(batch_size, test_batches, train_batches, batch_splits=batch_splits)
 
-    @tf.function()
+    #@tf.function()
     def read_weights(self):
         return [w.read_value() for w in self.model.weights]
 
-    @tf.function()
+    #@tf.function()
     def process_inner_loop(self, x, y, z, q):
         with tf.GradientTape() as tape:
-            policy, value = self.model(x, training=True)
-            policy_loss = self.policy_loss_fn(y, policy)
-            reg_term = sum(self.model.losses)
-            if self.wdl:
-                value_loss = self.value_loss_fn(self.qMix(z, q), value)
-                total_loss = self.lossMix(policy_loss, value_loss) + reg_term
+            policy, _ = self.model(x, training=True)
+            if self.cfg["gen_training"]["loss_func"] == "discriminator":
+                # the policy were all nonhuman moves
+                ## attempt 1:
+                ## this is not differentiable because of onehot, cast etc.
+                # nonhuman_moves = tf.one_hot(tf.cast(tf.math.argmax(policy,
+                    # axis=1), tf.int32), y.shape[1], dtype=tf.float16)
+                # TODO: 0 seems to be -0 after this application
+
+                ## attempt 2: abs(sign(reduce_max(x))-1)
+                ## bad, because gradient(sign) == 0
+                # nonhuman_moves = tf.sign(tf.reduce_max(policy,axis=-1,keepdims=True)-policy)
+
+                ## both these are equivalent
+                # nonhuman_moves = (nonhuman_moves-1)*(-1)
+                # nonhuman_moves = tf.abs(nonhuman_moves-1)
+
+                # attempt 3: just use policy itself, which is a softmax and
+                # not argmax
+                nonhuman_moves = policy
+                preds = self.d_model((x, nonhuman_moves), training=True)
+
+                # unclear how to convert preds to [0,1] in differentiable
+                # way; maybe just use the softmax probs also makes sense?
+                # preds = tf.sign(tf.reduce_max(preds, axis=-1,keepdims=True)-preds)
+                # preds = (preds-1)*(-1)
+
+                # for a sample, if the d model predicts it as [0,1], then the
+                # gen did a good job; if the model predicts it as [1,0], then
+                # the generator did not do a good job, and it should add to the
+                # loss. so we will take the dot product of the generator with [1,0]
+                label_nonhuman = tf.constant([1,0], dtype=self.model_dtype)
+                batch_size = x.shape[0]
+                reg_term = sum(self.model.losses)
+                disc_correct = tf.reduce_sum(preds*label_nonhuman)
+                # dividing by batch size so value is not too large
+                policy_loss = disc_correct / batch_size
+                ## correct one
+                total_loss = disc_correct / batch_size
             else:
-                mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
-                total_loss = self.lossMix(policy_loss, mse_loss) + reg_term
+                policy_loss = self.policy_loss_fn(y, policy)
+                # mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
+                # total_loss = self.lossMix(policy_loss, mse_loss) + reg_term
+                mse_loss = 0.0
+                reg_term = sum(self.model.losses)
+                total_loss = policy_loss + reg_term
+
             if self.loss_scale != 1:
                 total_loss = self.optimizer.get_scaled_loss(total_loss)
-        if self.wdl:
-            mse_loss = self.mse_loss_fn(self.qMix(z, q), value)
-        else:
-            value_loss = self.value_loss_fn(self.qMix(z, q), value)
-        return policy_loss, value_loss, mse_loss, reg_term, tape.gradient(total_loss, self.model.trainable_weights)
+
+            value_loss = 0.0
+            mse_loss = 0.0
+
+        return policy_loss, value_loss, mse_loss,\
+    reg_term,tape.gradient(total_loss, self.model.trainable_weights)
 
     def process_v2(self, batch_size, test_batches, train_batches, batch_splits=1):
         if not self.time_start:
@@ -425,6 +468,12 @@ class TFProcess:
         for _ in range(batch_splits):
             x, y, z, q = next(self.train_iter)
             policy_loss, value_loss, mse_loss, reg_term, new_grads = self.process_inner_loop(x, y, z, q)
+
+            ## debugging code
+            # g2 = [tf.reduce_max(g).numpy() for g in new_grads if g is not None]
+            # if not (np.max(g2) == 0 and np.min(g2) == 0):
+                # print("Max/Min gradients: ", np.max(g2), np.min(g2))
+
             if not grads:
                 grads = new_grads
             else:
@@ -713,13 +762,20 @@ class TFProcess:
             flow = self.residual_block_v2(flow, self.RESIDUAL_FILTERS)
         # Policy head
         if self.POLICY_HEAD == NetworkFormat.POLICY_CONVOLUTION:
-            conv_pol = self.conv_block_v2(flow, filter_size=3, output_channels=self.RESIDUAL_FILTERS)
-            conv_pol2 = tf.keras.layers.Conv2D(80, 3, use_bias=True, padding='same', kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg, data_format='channels_first')(conv_pol)
+            conv_pol = self.conv_block_v2(flow, filter_size=3,
+                    output_channels=self.RESIDUAL_FILTERS)
+            conv_pol2 = tf.keras.layers.Conv2D(80, 3, use_bias=True, padding='same',
+                    kernel_initializer='glorot_normal',
+                    kernel_regularizer=self.l2reg,
+                    bias_regularizer=self.l2reg,
+                    data_format='channels_first')(conv_pol)
             h_fc1 = ApplyPolicyMap()(conv_pol2)
         elif self.POLICY_HEAD == NetworkFormat.POLICY_CLASSICAL:
-            conv_pol = self.conv_block_v2(flow, filter_size=1, output_channels=self.policy_channels)
+            conv_pol = self.conv_block_v2(flow, filter_size=1,
+                    output_channels=self.policy_channels)
             h_conv_pol_flat = tf.keras.layers.Flatten()(conv_pol)
             h_fc1 = tf.keras.layers.Dense(1858,
+                    # activation='softmax',
                     kernel_initializer='glorot_normal',
                     kernel_regularizer=self.l2reg,
                     bias_regularizer=self.l2reg)(h_conv_pol_flat)
@@ -730,9 +786,17 @@ class TFProcess:
         # Value head
         conv_val = self.conv_block_v2(flow, filter_size=1, output_channels=32)
         h_conv_val_flat = tf.keras.layers.Flatten()(conv_val)
-        h_fc2 = tf.keras.layers.Dense(128, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, activation='relu')(h_conv_val_flat)
+        h_fc2 = tf.keras.layers.Dense(128, kernel_initializer='glorot_normal',
+                kernel_regularizer=self.l2reg,
+                activation='relu')(h_conv_val_flat)
+
         if self.wdl:
-            h_fc3 = tf.keras.layers.Dense(3, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(h_fc2)
+            h_fc3 = tf.keras.layers.Dense(3, kernel_initializer='glorot_normal',
+                    kernel_regularizer=self.l2reg,
+                    bias_regularizer=self.l2reg)(h_fc2)
         else:
-            h_fc3 = tf.keras.layers.Dense(1, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, activation='tanh')(h_fc2)
+            h_fc3 = tf.keras.layers.Dense(1,
+                    kernel_initializer='glorot_normal',
+                    kernel_regularizer=self.l2reg,
+                    activation='tanh')(h_fc2)
         return h_fc1, h_fc3

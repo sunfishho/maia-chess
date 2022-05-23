@@ -47,22 +47,6 @@ class ApplySqueezeExcitation(tf.keras.layers.Layer):
         gammas, betas = tf.split(tf.reshape(excited, [-1, self.reshape_size, 1, 1]), 2, axis=1)
         return tf.nn.sigmoid(gammas) * x + betas
 
-class ApplyPolicyMapDiscriminator(tf.keras.layers.Layer):
-    def __init__(self, **kwargs):
-        super(ApplyPolicyMapDiscriminator, self).__init__(**kwargs)
-        self.fc1 = tf.constant(make_map())
-        # self.fc1_modified = tf.Variable((np.empty((0, 2), dtype=np.float16)), shape=[None, 2])
-
-    def call(self, inputs):
-        #print("Inputs:")
-        print(inputs.shape)
-        #pdb.set_trace()
-        h_conv_pol_flat = tf.reshape(inputs, [-1, 80*8*8]) # None x 5120
-        print(h_conv_pol_flat.shape)
-        return h_conv_pol_flat[:, 0:2]
-        #return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1_modified, h_conv_pol_flat.dtype))
-        # return tf.matmul(h_conv_pol_flat, tf.cast(self.fc1, h_conv_pol_flat.dtype))
-
 class TFProcessDiscriminator:
     def __init__(self, cfg, name, collection_name):
         self.cfg = cfg
@@ -151,7 +135,7 @@ class TFProcessDiscriminator:
     def init_net_v2(self):
         self.l2reg = tf.keras.regularizers.l2(l=0.5 * (0.0001))
         input_var = tf.keras.Input(shape=(112, 8*8))
-        input_labels = tf.keras.Input(shape=1858, dtype=tf.float16)
+        input_labels = tf.keras.Input(shape=1858, dtype=self.model_dtype)
         x_planes = tf.keras.layers.Reshape([112, 8, 8])(input_var)
         self.model = tf.keras.Model(inputs=(input_var, input_labels), outputs=self.construct_net_v2((x_planes, input_labels)))
         # swa_count initialized reguardless to make checkpoint code simpler.
@@ -166,7 +150,8 @@ class TFProcessDiscriminator:
                 momentum=0.9, nesterov=True)
         self.orig_optimizer = self.optimizer
         if self.loss_scale != 1:
-            self.optimizer = tf.keras.mixed_precision.experimental.LossScaleOptimizer(self.optimizer, self.loss_scale)
+            self.optimizer = tf.keras.mixed_precision.experimental.\
+                    LossScaleOptimizer(self.optimizer, self.loss_scale)
 
         def correct_policy(target, output):
             output = tf.cast(output, tf.float32)
@@ -182,9 +167,6 @@ class TFProcessDiscriminator:
             return target, output
         def policy_loss(target, output):
             target, output = correct_policy(target, output)
-            # print("target shape: " + str(target.shape))
-            # print("output shape: " + str(output.shape))
-            # pdb.set_trace()
             policy_cross_entropy = \
                 tf.nn.softmax_cross_entropy_with_logits(labels=tf.stop_gradient(target),
                                                         logits=output)
@@ -392,7 +374,7 @@ class TFProcessDiscriminator:
 
             non_human_move = self.gen_model(x, training=False)[0]
             non_human_move = tf.one_hot(tf.cast(tf.math.argmax(non_human_move,
-                axis=1), tf.int32), y.shape[1], dtype=tf.float16)
+                axis=1), tf.int32), y.shape[1], dtype=self.model_dtype)
 
             ynum = y.numpy()
             indices = ynum == -1
@@ -413,6 +395,10 @@ class TFProcessDiscriminator:
             value_loss = 0.0
             mse_loss = 0.0
             total_loss = policy_loss
+
+            ## TODO: add reg_term or not to total loss
+            if self.loss_scale != 1:
+                total_loss = self.optimizer.get_scaled_loss(total_loss)
 
         return policy_loss, value_loss, mse_loss, reg_term,\
                 tape.gradient(total_loss, self.model.trainable_weights)
@@ -545,7 +531,6 @@ class TFProcessDiscriminator:
 
     @tf.function()
     def calculate_test_summaries_inner_loop(self, x, y, z, q):
-
         labels_human = tf.tile(tf.constant([[0, 1]]), [x.shape[0], 1])
         labels_nonhuman = tf.tile(tf.constant([[1, 0]]), [x.shape[0], 1])
 
@@ -553,7 +538,7 @@ class TFProcessDiscriminator:
         # non_human_move = tf.math.argmax(non_human_move[0], axis=1)
         # TODO: convert into zeros or ones
         non_human_move = tf.one_hot(tf.cast(tf.math.argmax(non_human_move,
-            axis=1), tf.int32), y.shape[1], dtype=tf.float16)
+            axis=1), tf.int32), y.shape[1], dtype=self.model_dtype)
 
         human_policy = self.model((x, y), training=True)
         human_policy_accuracy = self.policy_accuracy_fn(labels_human, human_policy)
@@ -585,15 +570,14 @@ class TFProcessDiscriminator:
                 x, y, z, q = next(self.train_iter)
             elif kind == 'Test':
                 x, y, z, q = next(self.test_iter)
-            # print("Counter: " + str(i))
-            policy_loss, value_loss, mse_loss, policy_accuracy, value_accuracy = self.calculate_test_summaries_inner_loop(x, y, z, q)
-            # pdb.set_trace()
+            policy_loss, _, _, policy_accuracy, _ = \
+                    self.calculate_test_summaries_inner_loop(x, y, z, q)
             sum_policy_accuracy += policy_accuracy
-            sum_mse += mse_loss
+            # sum_mse += mse_loss
             sum_policy += policy_loss
-            if self.wdl:
-                sum_value_accuracy += value_accuracy
-                sum_value += value_loss
+            # if self.wdl:
+                # sum_value_accuracy += value_accuracy
+                # sum_value += value_loss
 
         sum_policy_accuracy /= batches
         sum_policy_accuracy *= 100
@@ -793,21 +777,12 @@ class TFProcessDiscriminator:
                         bias_regularizer=self.l2reg)(final_flat)
 
             h_fc1 = tf.keras.layers.Dense(2,
+                    activation='softmax',
                     kernel_initializer='glorot_normal',
                     kernel_regularizer=self.l2reg,
                     bias_regularizer=self.l2reg)(final_flat)
-
         else:
             raise ValueError(
                 "Unknown policy head type {}".format(self.POLICY_HEAD))
-
-        # Value head
-        # conv_val = self.conv_block_v2(flow, filter_size=1, output_channels=32)
-        # h_conv_val_flat = tf.keras.layers.Flatten()(conv_val)
-        # h_fc2 = tf.keras.layers.Dense(128, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, activation='relu')(h_conv_val_flat)
-        # if self.wdl:
-            # h_fc3 = tf.keras.layers.Dense(3, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, bias_regularizer=self.l2reg)(h_fc2)
-        # else:
-            # h_fc3 = tf.keras.layers.Dense(1, kernel_initializer='glorot_normal', kernel_regularizer=self.l2reg, activation='tanh')(h_fc2)
 
         return h_fc1

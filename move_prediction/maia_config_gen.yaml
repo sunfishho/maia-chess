@@ -39,7 +39,7 @@ disc_training:
   test_steps: 50
   train_avg_report_steps: 50
 
-  total_steps_per_cycle: 10000
+  total_steps_per_cycle: 100
   checkpoint_steps: 10000
   lr_values:
       - 0.01
